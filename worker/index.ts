@@ -19,14 +19,17 @@ function jsonResponse(data: unknown, init: ResponseInit = {}) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/health" && request.method === "GET") {
+      const result = await env.DB.prepare("SELECT 1 AS ok").first();
+
       return jsonResponse({
         app: "book-list",
         status: "ok",
         runtime: "cloudflare-workers",
+        database: result,
       });
     }
 
