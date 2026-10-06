@@ -1,5 +1,5 @@
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 
 type ApiHealth = {
@@ -10,7 +10,12 @@ type ApiHealth = {
 
 type ApiBooksResponse = {
   books: BookRecord[];
-  persistence: "not-configured";
+  persistence: "d1";
+};
+
+type ApiCreateBookResponse = {
+  book: BookRecord;
+  persistence: "d1";
 };
 
 type BookRecord = {
@@ -39,17 +44,12 @@ const initialForm: BookForm = {
   memo: "",
 };
 
-function optionalText(value: string) {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function App() {
   const [apiHealth, setApiHealth] = useState<ApiHealth | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [serverBooks, setServerBooks] = useState<BookRecord[]>([]);
   const [form, setForm] = useState<BookForm>(initialForm);
-  const [draftBooks, setDraftBooks] = useState<BookRecord[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     let ignore = false;
@@ -88,30 +88,37 @@ function App() {
     };
   }, []);
 
-  const visibleBooks = useMemo(
-    () => [...draftBooks, ...serverBooks],
-    [draftBooks, serverBooks],
-  );
-
   function updateForm(field: keyof BookForm, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setIsSubmitting(true);
 
-    const nextBook: BookRecord = {
-      id: crypto.randomUUID(),
-      title: optionalText(form.title),
-      author: optionalText(form.author),
-      finishedOn: optionalText(form.finishedOn),
-      photoUrl: optionalText(form.photoUrl),
-      memo: optionalText(form.memo),
-      createdAt: new Date().toISOString(),
-    };
+    try {
+      const response = await fetch("/api/books", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(form),
+      });
 
-    setDraftBooks((current) => [nextBook, ...current]);
-    setForm(initialForm);
+      if (!response.ok) {
+        throw new Error("読書記録を保存できませんでした。");
+      }
+
+      const result = (await response.json()) as ApiCreateBookResponse;
+
+      setServerBooks((current) => [result.book, ...current]);
+      setForm(initialForm);
+      setApiError(null);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "読書記録の保存に失敗しました。");
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -132,7 +139,7 @@ function App() {
             </div>
             <div>
               <dt>保存先</dt>
-              <dd>D1 未接続</dd>
+              <dd className="status-ok">D1 接続済み</dd>
             </div>
             <div>
               <dt>認証</dt>
@@ -202,7 +209,9 @@ function App() {
               />
             </label>
 
-            <button type="submit">追加</button>
+            <button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "保存中" : "追加"}
+            </button>
           </form>
 
           <section className="panel records-panel" aria-labelledby="records-title">
@@ -211,17 +220,17 @@ function App() {
                 <p className="eyebrow">Records</p>
                 <h2 id="records-title">読書リスト</h2>
               </div>
-              <span className="counter">{visibleBooks.length}件</span>
+              <span className="counter">{serverBooks.length}件</span>
             </div>
 
-            {visibleBooks.length === 0 ? (
+            {serverBooks.length === 0 ? (
               <div className="empty-state">
                 <h3>まだ記録はありません</h3>
                 <p>タイトルや作者が不明でも、この画面から読書記録を追加できます。</p>
               </div>
             ) : (
               <ul className="record-list">
-                {visibleBooks.map((book) => (
+                {serverBooks.map((book) => (
                   <li key={book.id}>
                     {book.photoUrl ? (
                       <img src={book.photoUrl} alt="" loading="lazy" />
