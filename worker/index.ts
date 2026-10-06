@@ -34,11 +34,22 @@ export default {
     }
 
     if (url.pathname === "/api/books" && request.method === "GET") {
-      const books: ApiBook[] = [];
+      const result = await env.DB.prepare(`
+        SELECT
+          id,
+          title,
+          author,
+          finished_on AS finishedOn,
+          photo_url AS photoUrl,
+          memo,
+          created_at AS createdAt
+        FROM books
+        ORDER BY created_at DESC
+      `).all<ApiBook>();
 
       return jsonResponse({
-        books,
-        persistence: "not-configured",
+        books: result.results,
+        persistence: "d1",
       });
     }
 
@@ -58,4 +69,4 @@ export default {
 
     return new Response(null, { status: 404 });
   },
-} satisfies ExportedHandler;
+} satisfies ExportedHandler<Env>;
