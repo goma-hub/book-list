@@ -1,5 +1,7 @@
-import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
+import { authClient } from "./auth-client";
+import { AuthForm } from "./AuthForm";
+import { BookWorkspace } from "./BookWorkspace";
 import "./App.css";
 
 type ApiHealth = {
@@ -8,116 +10,43 @@ type ApiHealth = {
   runtime: string;
 };
 
-type ApiBooksResponse = {
-  books: BookRecord[];
-  persistence: "d1";
-};
-
-type ApiCreateBookResponse = {
-  book: BookRecord;
-  persistence: "d1";
-};
-
-type BookRecord = {
-  id: string;
-  title: string | null;
-  author: string | null;
-  finishedOn: string | null;
-  photoUrl: string | null;
-  memo: string | null;
-  createdAt: string;
-};
-
-type BookForm = {
-  title: string;
-  author: string;
-  finishedOn: string;
-  photoUrl: string;
-  memo: string;
-};
-
-const initialForm: BookForm = {
-  title: "",
-  author: "",
-  finishedOn: "",
-  photoUrl: "",
-  memo: "",
-};
-
 function App() {
+  const { data: session, isPending, error: sessionError, refetch: refetchSession } = authClient.useSession();
   const [apiHealth, setApiHealth] = useState<ApiHealth | null>(null);
-  const [apiError, setApiError] = useState<string | null>(null);
-  const [serverBooks, setServerBooks] = useState<BookRecord[]>([]);
-  const [form, setForm] = useState<BookForm>(initialForm);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [isSigningOut, setIsSigningOut] = useState(false);
 
   useEffect(() => {
-    let ignore = false;
-
-    async function loadApiStatus() {
+    const controller = new AbortController();
+    async function loadHealth() {
       try {
-        const [healthResponse, booksResponse] = await Promise.all([
-          fetch("/api/health"),
-          fetch("/api/books"),
-        ]);
-
-        if (!healthResponse.ok || !booksResponse.ok) {
-          throw new Error("Worker APIから正常な応答がありませんでした。");
-        }
-
-        const health = (await healthResponse.json()) as ApiHealth;
-        const books = (await booksResponse.json()) as ApiBooksResponse;
-
-        if (!ignore) {
-          setApiHealth(health);
-          setServerBooks(books.books);
-          setApiError(null);
-        }
+        const response = await fetch("/api/health", { signal: controller.signal });
+        if (!response.ok) throw new Error("Worker APIの接続を確認できませんでした。");
+        const health = (await response.json()) as ApiHealth;
+        if (!controller.signal.aborted) setApiHealth(health);
       } catch (error) {
-        if (!ignore) {
-          setApiHealth(null);
-          setApiError(error instanceof Error ? error.message : "API接続に失敗しました。");
+        if (!controller.signal.aborted) {
+          setHealthError(error instanceof Error ? error.message : "API接続に失敗しました。");
         }
       }
     }
-
-    void loadApiStatus();
-
-    return () => {
-      ignore = true;
-    };
+    void loadHealth();
+    return () => controller.abort();
   }, []);
 
-  function updateForm(field: keyof BookForm, value: string) {
-    setForm((current) => ({ ...current, [field]: value }));
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setIsSubmitting(true);
-
+  async function handleSignOut() {
+    if (isSigningOut) return;
+    setIsSigningOut(true);
+    setSignOutError(null);
     try {
-      const response = await fetch("/api/books", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(form),
-      });
-
-      if (!response.ok) {
-        throw new Error("読書記録を保存できませんでした。");
-      }
-
-      const result = (await response.json()) as ApiCreateBookResponse;
-
-      setServerBooks((current) => [result.book, ...current]);
-      setForm(initialForm);
-      setApiError(null);
+      const result = await authClient.signOut();
+      if (result.error) throw new Error("ログアウトできませんでした。再度お試しください。");
+      await refetchSession();
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : "読書記録の保存に失敗しました。");
+      setSignOutError(error instanceof Error ? error.message : "ログアウトできませんでした。");
     } finally {
-      setIsSubmitting(false);
+      setIsSigningOut(false);
     }
   }
 
@@ -129,128 +58,48 @@ function App() {
             <p className="eyebrow">Book List</p>
             <h1>読書記録</h1>
           </div>
-
           <dl className="status-list">
             <div>
               <dt>Worker API</dt>
               <dd className={apiHealth ? "status-ok" : "status-waiting"}>
-                {apiHealth ? "接続済み" : apiError ? "確認失敗" : "確認中"}
+                {apiHealth ? "接続済み" : healthError ? "確認失敗" : "確認中"}
               </dd>
             </div>
             <div>
               <dt>保存先</dt>
-              <dd className="status-ok">D1 接続済み</dd>
+              <dd className={apiHealth ? "status-ok" : "status-waiting"}>
+                {apiHealth ? "D1 接続済み" : "接続確認中"}
+              </dd>
             </div>
             <div>
               <dt>認証</dt>
-              <dd>未実装</dd>
+              <dd>{isPending ? "確認中" : sessionError ? "確認失敗" : session ? "ログイン済み" : "未ログイン"}</dd>
             </div>
           </dl>
-
-          {apiError ? <p className="notice">{apiError}</p> : null}
+          {session ? (
+            <div className="account-info">
+              <p><strong>{session.user.name}</strong><br />{session.user.email}</p>
+              <button type="button" disabled={isSigningOut} onClick={() => void handleSignOut()}>
+                {isSigningOut ? "ログアウト中…" : "ログアウト"}
+              </button>
+            </div>
+          ) : null}
+          {healthError ? <p className="notice" role="alert">{healthError}</p> : null}
+          {signOutError ? <p className="notice" role="alert">{signOutError}</p> : null}
         </aside>
 
-        <section className="content-grid">
-          <form className="panel entry-form" onSubmit={handleSubmit}>
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">New Record</p>
-                <h2>読書記録を追加</h2>
-              </div>
-              <span className="pill">任意入力</span>
-            </div>
-
-            <label>
-              <span>本のタイトル</span>
-              <input
-                value={form.title}
-                onChange={(event) => updateForm("title", event.target.value)}
-                placeholder="例: 銀河鉄道の夜"
-              />
-            </label>
-
-            <label>
-              <span>作者名</span>
-              <input
-                value={form.author}
-                onChange={(event) => updateForm("author", event.target.value)}
-                placeholder="例: 宮沢賢治"
-              />
-            </label>
-
-            <div className="form-row">
-              <label>
-                <span>読了日</span>
-                <input
-                  type="date"
-                  value={form.finishedOn}
-                  onChange={(event) => updateForm("finishedOn", event.target.value)}
-                />
-              </label>
-
-              <label>
-                <span>本の写真URL</span>
-                <input
-                  type="url"
-                  value={form.photoUrl}
-                  onChange={(event) => updateForm("photoUrl", event.target.value)}
-                  placeholder="https://example.com/book.jpg"
-                />
-              </label>
-            </div>
-
-            <label>
-              <span>メモ</span>
-              <textarea
-                value={form.memo}
-                onChange={(event) => updateForm("memo", event.target.value)}
-                placeholder="感想やあらすじのメモ"
-                rows={5}
-              />
-            </label>
-
-            <button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? "保存中" : "追加"}
-            </button>
-          </form>
-
-          <section className="panel records-panel" aria-labelledby="records-title">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Records</p>
-                <h2 id="records-title">読書リスト</h2>
-              </div>
-              <span className="counter">{serverBooks.length}件</span>
-            </div>
-
-            {serverBooks.length === 0 ? (
-              <div className="empty-state">
-                <h3>まだ記録はありません</h3>
-                <p>タイトルや作者が不明でも、この画面から読書記録を追加できます。</p>
-              </div>
-            ) : (
-              <ul className="record-list">
-                {serverBooks.map((book) => (
-                  <li key={book.id}>
-                    {book.photoUrl ? (
-                      <img src={book.photoUrl} alt="" loading="lazy" />
-                    ) : (
-                      <div className="cover-placeholder">No Image</div>
-                    )}
-                    <div>
-                      <h3>{book.title ?? "タイトル未入力"}</h3>
-                      <p>{book.author ?? "作者未入力"}</p>
-                      <time dateTime={book.createdAt}>
-                        {book.finishedOn ?? "読了日未入力"}
-                      </time>
-                      {book.memo ? <p className="memo">{book.memo}</p> : null}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+        {isPending ? (
+          <section className="panel" role="status">ログイン状態を確認しています…</section>
+        ) : sessionError ? (
+          <section className="panel entry-form">
+            <p className="notice" role="alert">ログイン状態を確認できませんでした。</p>
+            <button type="button" onClick={() => void refetchSession()}>再試行</button>
           </section>
-        </section>
+        ) : session ? (
+          <BookWorkspace key={session.user.id} onSessionExpired={refetchSession} />
+        ) : (
+          <AuthForm onAuthenticated={refetchSession} />
+        )}
       </section>
     </main>
   );

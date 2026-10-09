@@ -180,6 +180,52 @@ button:hover {
   background: #1f3475;
 }
 
+button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.auth-panel {
+  align-self: start;
+  width: 100%;
+  max-width: 480px;
+}
+
+.auth-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.auth-mode button[aria-pressed="false"] {
+  background: #eef1fb;
+  color: #263f8f;
+}
+
+.auth-mode button[aria-pressed="false"]:hover {
+  background: #dfe5f6;
+}
+
+.field-hint {
+  color: #52606d;
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+
+.account-info {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.account-info button {
+  width: 100%;
+}
+
+.entry-form .notice {
+  margin-bottom: 0;
+}
+
 .pill,
 .counter {
   border-radius: 999px;

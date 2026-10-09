@@ -1,3 +1,6 @@
+import { createAuth } from "./auth";
+import type { AuthBindings } from "./auth";
+
 type ApiBook = {
   id: string;
   title: string | null;
@@ -15,8 +18,6 @@ type BookInput = {
   photoUrl?: unknown;
   memo?: unknown;
 };
-
-const DEV_USER_ID = "dev-user";
 
 function optionalText(value: unknown) {
   if (typeof value !== "string") {
@@ -41,6 +42,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/api/auth" || url.pathname.startsWith("/api/auth/")) {
+      return createAuth(env).handler(request);
+    }
+
     if (url.pathname === "/api/health" && request.method === "GET") {
       const result = await env.DB.prepare("SELECT 1 AS ok").first();
 
@@ -52,53 +57,56 @@ export default {
       });
     }
 
-    if (url.pathname === "/api/books" && request.method === "GET") {
-      const result = await env.DB.prepare(`
-        SELECT
-          id,
-          title,
-          author,
-          finished_on AS finishedOn,
-          photo_url AS photoUrl,
-          memo,
-          created_at AS createdAt
-        FROM books
-        ORDER BY created_at DESC
-      `).all<ApiBook>();
-
-      return jsonResponse({
-        books: result.results,
-        persistence: "d1",
+    if (url.pathname === "/api/books") {
+      const session = await createAuth(env).api.getSession({
+        headers: request.headers,
       });
-    }
 
-    if (url.pathname === "/api/books" && request.method === "POST") {
-      let input: BookInput;
-
-      try {
-        input = (await request.json()) as BookInput;
-      } catch {
-        return jsonResponse({ error: "invalid_json" }, { status: 400 });
+      if (!session) {
+        return jsonResponse({ error: "unauthorized" }, { status: 401 });
       }
 
-      const book: ApiBook = {
-        id: crypto.randomUUID(),
-        title: optionalText(input.title),
-        author: optionalText(input.author),
-        finishedOn: optionalText(input.finishedOn),
-        photoUrl: optionalText(input.photoUrl),
-        memo: optionalText(input.memo),
-        createdAt: new Date().toISOString(),
-      };
+      if (request.method === "GET") {
+        const result = await env.DB.prepare(`
+          SELECT
+            id,
+            title,
+            author,
+            finished_on AS finishedOn,
+            photo_url AS photoUrl,
+            memo,
+            created_at AS createdAt
+          FROM books
+          WHERE user_id = ?
+          ORDER BY created_at DESC
+        `).bind(session.user.id).all<ApiBook>();
 
-      await env.DB.batch([
-        env.DB.prepare(
-          `
-            INSERT OR IGNORE INTO users (id, email, password_hash, created_at)
-            VALUES (?, ?, ?, ?)
-          `,
-        ).bind(DEV_USER_ID, "dev-user@example.invalid", "dev-password-placeholder", book.createdAt),
-        env.DB.prepare(
+        return jsonResponse({
+          books: result.results,
+          persistence: "d1",
+        });
+      }
+
+      if (request.method === "POST") {
+        let input: BookInput;
+
+        try {
+          input = (await request.json()) as BookInput;
+        } catch {
+          return jsonResponse({ error: "invalid_json" }, { status: 400 });
+        }
+
+        const book: ApiBook = {
+          id: crypto.randomUUID(),
+          title: optionalText(input.title),
+          author: optionalText(input.author),
+          finishedOn: optionalText(input.finishedOn),
+          photoUrl: optionalText(input.photoUrl),
+          memo: optionalText(input.memo),
+          createdAt: new Date().toISOString(),
+        };
+
+        await env.DB.prepare(
           `
             INSERT INTO books (
               id,
@@ -114,23 +122,23 @@ export default {
           `,
         ).bind(
           book.id,
-          DEV_USER_ID,
+          session.user.id,
           book.title,
           book.author,
           book.finishedOn,
           book.photoUrl,
           book.memo,
           book.createdAt,
-        ),
-      ]);
+        ).run();
 
-      return jsonResponse(
-        {
-          book,
-          persistence: "d1",
-        },
-        { status: 201 },
-      );
+        return jsonResponse(
+          {
+            book,
+            persistence: "d1",
+          },
+          { status: 201 },
+        );
+      }
     }
 
     if (url.pathname.startsWith("/api/")) {
@@ -139,4 +147,4 @@ export default {
 
     return new Response(null, { status: 404 });
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<AuthBindings>;
