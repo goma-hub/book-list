@@ -110,7 +110,8 @@ Cloudflare D1 に以下の情報を保存します。
 | title | 本のタイトル | 任意 |
 | author | 作者名 | 任意 |
 | finished_on | 読了日 | 任意 |
-| photo_url | 本の写真の URL または保存先 | 任意 |
+| photo_url | 本の写真の外部 URL | 任意 |
+| photo_key | 非公開 R2 に保存した写真のキー | 任意 |
 | created_at | 作成日時 | 必須 |
 | updated_at | 更新日時 | 必須 |
 

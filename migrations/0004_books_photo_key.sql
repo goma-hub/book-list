@@ -1,0 +1,1 @@
+ALTER TABLE books ADD COLUMN photo_key TEXT;

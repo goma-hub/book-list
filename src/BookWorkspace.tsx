@@ -1,5 +1,5 @@
 import type { FormEvent } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type ApiBooksResponse = {
   books: BookRecord[];
@@ -9,6 +9,10 @@ type ApiBooksResponse = {
 type ApiCreateBookResponse = {
   book: BookRecord;
   persistence: "d1";
+};
+
+type ApiPhotoResponse = {
+  photoUrl: string;
 };
 
 type BookRecord = {
@@ -37,6 +41,15 @@ const initialForm: BookForm = {
   memo: "",
 };
 
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+function photoFileError(file: File) {
+  if (!PHOTO_TYPES.includes(file.type)) return "JPEG・PNG・WebP形式の写真を選んでください。";
+  if (file.size === 0 || file.size > MAX_PHOTO_BYTES) return "写真は5MB以下のファイルを選んでください。";
+  return null;
+}
+
 type BookWorkspaceProps = {
   onSessionExpired: () => Promise<void>;
 };
@@ -45,8 +58,12 @@ export function BookWorkspace({ onSessionExpired }: BookWorkspaceProps) {
   const [apiError, setApiError] = useState<string | null>(null);
   const [serverBooks, setServerBooks] = useState<BookRecord[]>([]);
   const [form, setForm] = useState<BookForm>(initialForm);
+  const [selectedPhoto, setSelectedPhoto] = useState<File | null>(null);
+  const [uploadingBookId, setUploadingBookId] = useState<string | null>(null);
+  const [photoErrors, setPhotoErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const photoInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -81,9 +98,56 @@ export function BookWorkspace({ onSessionExpired }: BookWorkspaceProps) {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
+  async function uploadPhoto(bookId: string, file: File) {
+    const validationError = photoFileError(file);
+    if (validationError) {
+      setPhotoErrors((current) => ({ ...current, [bookId]: validationError }));
+      return false;
+    }
+
+    setUploadingBookId(bookId);
+    setPhotoErrors((current) => ({ ...current, [bookId]: "" }));
+    try {
+      const response = await fetch(`/api/books/${encodeURIComponent(bookId)}/photo`, {
+        method: "PUT",
+        headers: { "content-type": file.type },
+        body: file,
+      });
+      if (response.status === 401) {
+        await onSessionExpired();
+        throw new Error("ログインの有効期限が切れました。再度ログインしてください。");
+      }
+      if (response.status === 413) throw new Error("写真は5MB以下のファイルを選んでください。");
+      if (response.status === 415) throw new Error("JPEG・PNG・WebP形式の写真を選んでください。");
+      if (response.status === 409) throw new Error("写真が同時に更新されました。もう一度選んでください。");
+      if (!response.ok) throw new Error("写真を保存できませんでした。もう一度お試しください。");
+
+      const result = (await response.json()) as ApiPhotoResponse;
+      setServerBooks((current) => current.map((book) =>
+        book.id === bookId ? { ...book, photoUrl: result.photoUrl } : book,
+      ));
+      return true;
+    } catch (error) {
+      setPhotoErrors((current) => ({
+        ...current,
+        [bookId]: error instanceof Error ? error.message : "写真を保存できませんでした。",
+      }));
+      return false;
+    } finally {
+      setUploadingBookId(null);
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSubmitting) return;
+    if (selectedPhoto) {
+      const validationError = photoFileError(selectedPhoto);
+      if (validationError) {
+        setApiError(validationError);
+        return;
+      }
+    }
     setIsSubmitting(true);
     try {
       const response = await fetch("/api/books", {
@@ -99,7 +163,13 @@ export function BookWorkspace({ onSessionExpired }: BookWorkspaceProps) {
       const result = (await response.json()) as ApiCreateBookResponse;
       setServerBooks((current) => [result.book, ...current]);
       setForm(initialForm);
-      setApiError(null);
+      setSelectedPhoto(null);
+      if (photoInputRef.current) photoInputRef.current.value = "";
+      if (selectedPhoto && !await uploadPhoto(result.book.id, selectedPhoto)) {
+        setApiError("読書記録は保存しましたが、写真は保存できませんでした。記録の写真欄から再試行できます。");
+      } else {
+        setApiError(null);
+      }
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "読書記録の保存に失敗しました。");
     } finally {
@@ -158,6 +228,17 @@ export function BookWorkspace({ onSessionExpired }: BookWorkspaceProps) {
         </div>
 
         <label>
+          <span>本の写真ファイル（写真URLより優先して表示）</span>
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(event) => setSelectedPhoto(event.currentTarget.files?.[0] ?? null)}
+          />
+          <small className="field-hint">JPEG・PNG・WebP、5MB以下</small>
+        </label>
+
+        <label>
           <span>メモ</span>
           <textarea
             value={form.memo}
@@ -206,6 +287,21 @@ export function BookWorkspace({ onSessionExpired }: BookWorkspaceProps) {
                     {book.finishedOn ?? "読了日未入力"}
                   </time>
                   {book.memo ? <p className="memo">{book.memo}</p> : null}
+                  <label className="record-photo-upload">
+                    <span>写真をアップロード・変更</span>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      disabled={uploadingBookId !== null || isSubmitting}
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        event.currentTarget.value = "";
+                        if (file) void uploadPhoto(book.id, file);
+                      }}
+                    />
+                  </label>
+                  {uploadingBookId === book.id ? <p role="status">写真を保存しています…</p> : null}
+                  {photoErrors[book.id] ? <p className="notice" role="alert">{photoErrors[book.id]}</p> : null}
                 </div>
               </li>
             ))}
