@@ -89,10 +89,54 @@ function jsonResponse(data: unknown, init: ResponseInit = {}) {
   });
 }
 
+async function readBookJson(request: Request): Promise<
+  { ok: true; input: unknown } | { ok: false; response: Response }
+> {
+  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    return { ok: false, response: jsonResponse({
+      error: "invalid_json",
+      message: "Content-Typeをapplication/jsonにして送信してください。",
+    }, { status: 415 }) };
+  }
+
+  try {
+    return { ok: true, input: await request.json() };
+  } catch {
+    return { ok: false, response: jsonResponse({
+      error: "invalid_json",
+      message: "正しいJSON形式で送信してください。",
+    }, { status: 400 }) };
+  }
+}
+
+async function findOwnedBook(db: D1Database, bookId: string, userId: string) {
+  return db.prepare(`
+    SELECT id, title, author, finished_on AS finishedOn,
+      photo_url AS photoUrl, photo_key AS photoKey, memo, created_at AS createdAt
+    FROM books
+    WHERE id = ? AND user_id = ?
+  `).bind(bookId, userId).first<BookRow>();
+}
+
+function invalidOrigin(request: Request, origin: string) {
+  return Boolean(request.headers.get("origin") && request.headers.get("origin") !== origin);
+}
+
+function photoCleanupFailed(book: ApiBook | null, removed: boolean) {
+  return jsonResponse({
+    error: "photo_cleanup_failed",
+    message: "変更は保存されましたが、古い写真の削除が完了していません。",
+    cleanupPending: true,
+    ...(removed ? { deleted: true } : { saved: true }),
+    ...(book ? { book } : {}),
+  }, { status: 500 });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const photoMatch = /^\/api\/books\/([^/]+)\/photo$/.exec(url.pathname);
+    const bookMatch = /^\/api\/books\/([^/]+)$/.exec(url.pathname);
 
     if (url.pathname === "/api/auth" || url.pathname.startsWith("/api/auth/")) {
       return createAuth(env).handler(request);
@@ -109,7 +153,7 @@ export default {
       });
     }
 
-    if (url.pathname === "/api/books" || photoMatch) {
+    if (url.pathname === "/api/books" || photoMatch || bookMatch) {
       const session = await createAuth(env).api.getSession({
         headers: request.headers,
       });
@@ -119,19 +163,15 @@ export default {
       }
 
       if (photoMatch) {
-        if (request.method !== "GET" && request.method !== "PUT") {
+        if (request.method !== "GET" && request.method !== "PUT" && request.method !== "DELETE") {
           return jsonResponse({ error: "method_not_allowed" }, {
             status: 405,
-            headers: { Allow: "GET, PUT" },
+            headers: { Allow: "GET, PUT, DELETE" },
           });
         }
 
         const bookId = photoMatch[1];
-        const ownerBook = await env.DB.prepare(`
-          SELECT photo_key AS photoKey
-          FROM books
-          WHERE id = ? AND user_id = ?
-        `).bind(bookId, session.user.id).first<{ photoKey: string | null }>();
+        const ownerBook = await findOwnedBook(env.DB, bookId, session.user.id);
 
         if (!ownerBook) {
           return jsonResponse({ error: "not_found" }, { status: 404 });
@@ -153,9 +193,46 @@ export default {
           return new Response(object.body, { headers });
         }
 
-        if (request.headers.get("origin") && request.headers.get("origin") !== url.origin) {
+        if (invalidOrigin(request, url.origin)) {
           return jsonResponse({ error: "invalid_origin" }, { status: 403 });
         }
+        if (request.method === "DELETE") {
+          if (!ownerBook.photoKey && !ownerBook.photoUrl) {
+            return jsonResponse({ photoUrl: null });
+          }
+          const validBook = validateBookInput({
+            title: ownerBook.title,
+            author: ownerBook.author,
+            finishedOn: ownerBook.finishedOn,
+            memo: ownerBook.memo,
+          });
+          if (!validBook.ok) return jsonResponse(validBook, { status: 400 });
+
+          let result: D1Result;
+          try {
+            result = await env.DB.prepare(`
+              UPDATE books SET photo_url = NULL, photo_key = NULL
+              WHERE id = ? AND user_id = ? AND photo_url IS ? AND photo_key IS ?
+            `).bind(bookId, session.user.id, ownerBook.photoUrl, ownerBook.photoKey).run();
+          } catch (error) {
+            console.error("Failed to remove book photo reference", error);
+            return jsonResponse({ error: "photo_save_failed", message: "写真を削除できませんでした。" }, { status: 500 });
+          }
+          if (result.meta.changes !== 1) {
+            return jsonResponse({ error: "book_conflict", message: "記録が更新されました。読み込み直して再試行してください。" }, { status: 409 });
+          }
+          const updated = toApiBook({ ...ownerBook, photoUrl: null, photoKey: null });
+          if (ownerBook.photoKey) {
+            try {
+              await env.BOOK_PHOTOS.delete(ownerBook.photoKey);
+            } catch (error) {
+              console.error("Failed to remove book photo", ownerBook.photoKey, error);
+              return photoCleanupFailed(updated, false);
+            }
+          }
+          return jsonResponse({ photoUrl: null, book: updated });
+        }
+
         const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
         const extension = PHOTO_EXTENSIONS[contentType];
         if (!extension) {
@@ -173,36 +250,164 @@ export default {
           return jsonResponse({ error: "invalid_photo" }, { status: 415 });
         }
 
-        const key = `books/${bookId}/${crypto.randomUUID()}.${extension}`;
-        await env.BOOK_PHOTOS.put(key, bytes, { httpMetadata: { contentType } });
+        const validBook = validateBookInput({
+          title: ownerBook.title,
+          author: ownerBook.author,
+          finishedOn: ownerBook.finishedOn,
+          memo: ownerBook.memo,
+        });
+        if (!validBook.ok) return jsonResponse(validBook, { status: 400 });
 
+        const key = `books/${bookId}/${crypto.randomUUID()}.${extension}`;
         try {
-          const result = await env.DB.prepare(`
-            UPDATE books SET photo_key = ?
-            WHERE id = ? AND user_id = ? AND photo_key IS ?
-          `).bind(key, bookId, session.user.id, ownerBook.photoKey).run();
-          if (result.meta.changes !== 1) {
-            await env.BOOK_PHOTOS.delete(key);
-            return jsonResponse({ error: "photo_conflict" }, { status: 409 });
-          }
+          await env.BOOK_PHOTOS.put(key, bytes, { httpMetadata: { contentType } });
+        } catch (error) {
+          console.error("Failed to upload book photo", error);
+          return jsonResponse({ error: "photo_upload_failed", message: "写真を保存できませんでした。" }, { status: 500 });
+        }
+
+        let result: D1Result;
+        try {
+          result = await env.DB.prepare(`
+            UPDATE books SET photo_key = ?, photo_url = NULL
+            WHERE id = ? AND user_id = ? AND photo_key IS ? AND photo_url IS ?
+          `).bind(key, bookId, session.user.id, ownerBook.photoKey, ownerBook.photoUrl).run();
         } catch (error) {
           try {
             await env.BOOK_PHOTOS.delete(key);
           } catch (cleanupError) {
-            console.error("Failed to remove unreferenced photo", cleanupError);
+            console.error("Failed to remove unreferenced photo", key, cleanupError);
+            return jsonResponse({ error: "photo_cleanup_failed", message: "写真の保存に失敗し、アップロード済みファイルの削除も完了していません。", cleanupPending: true }, { status: 500 });
           }
           console.error("Failed to save photo reference", error);
           return jsonResponse({ error: "photo_save_failed" }, { status: 500 });
+        }
+        if (result.meta.changes !== 1) {
+          try {
+            await env.BOOK_PHOTOS.delete(key);
+          } catch (error) {
+            console.error("Failed to remove conflicting photo", key, error);
+            return jsonResponse({ error: "photo_cleanup_failed", message: "写真の競合後、アップロード済みファイルの削除が完了していません。", cleanupPending: true }, { status: 500 });
+          }
+          return jsonResponse({ error: "photo_conflict", message: "写真が更新されました。読み込み直して再試行してください。" }, { status: 409 });
         }
 
         if (ownerBook.photoKey) {
           try {
             await env.BOOK_PHOTOS.delete(ownerBook.photoKey);
           } catch (error) {
-            console.error("Failed to remove previous photo", error);
+            console.error("Failed to remove previous photo", ownerBook.photoKey, error);
+            return photoCleanupFailed(toApiBook({ ...ownerBook, photoUrl: null, photoKey: key }), false);
           }
         }
         return jsonResponse({ photoUrl: `${photoPath(bookId)}?v=${crypto.randomUUID()}` });
+      }
+
+      if (bookMatch) {
+        if (request.method !== "GET" && request.method !== "PUT" && request.method !== "DELETE") {
+          return jsonResponse({ error: "method_not_allowed" }, {
+            status: 405,
+            headers: { Allow: "GET, PUT, DELETE" },
+          });
+        }
+
+        const bookId = bookMatch[1];
+        const ownerBook = await findOwnedBook(env.DB, bookId, session.user.id);
+        if (!ownerBook) {
+          return jsonResponse({ error: "not_found" }, { status: 404 });
+        }
+        if (request.method === "GET") {
+          return jsonResponse({ book: toApiBook(ownerBook), persistence: "d1" });
+        }
+        if (invalidOrigin(request, url.origin)) {
+          return jsonResponse({ error: "invalid_origin" }, { status: 403 });
+        }
+
+        if (request.method === "DELETE") {
+          let result: D1Result;
+          try {
+            result = await env.DB.prepare(`
+              DELETE FROM books
+              WHERE id = ? AND user_id = ?
+                AND title IS ? AND author IS ? AND finished_on IS ?
+                AND photo_url IS ? AND photo_key IS ? AND memo IS ?
+            `).bind(
+              bookId, session.user.id, ownerBook.title, ownerBook.author,
+              ownerBook.finishedOn, ownerBook.photoUrl, ownerBook.photoKey, ownerBook.memo,
+            ).run();
+          } catch (error) {
+            console.error("Failed to delete book", error);
+            return jsonResponse({ error: "book_delete_failed", message: "読書記録を削除できませんでした。" }, { status: 500 });
+          }
+          if (result.meta.changes !== 1) {
+            return jsonResponse({ error: "book_conflict", message: "記録が更新されました。読み込み直して再試行してください。" }, { status: 409 });
+          }
+          if (ownerBook.photoKey) {
+            try {
+              await env.BOOK_PHOTOS.delete(ownerBook.photoKey);
+            } catch (error) {
+              console.error("Failed to remove deleted book photo", ownerBook.photoKey, error);
+              return photoCleanupFailed(null, true);
+            }
+          }
+          return jsonResponse({ deleted: true });
+        }
+
+        const parsed = await readBookJson(request);
+        if (!parsed.ok) return parsed.response;
+        if (parsed.input === null || typeof parsed.input !== "object" || Array.isArray(parsed.input)) {
+          return jsonResponse(validateBookInput(parsed.input), { status: 400 });
+        }
+        const changes = parsed.input as Record<string, unknown>;
+        const validated = validateBookInput({
+          title: ownerBook.title,
+          author: ownerBook.author,
+          finishedOn: ownerBook.finishedOn,
+          photoUrl: ownerBook.photoUrl,
+          memo: ownerBook.memo,
+          ...changes,
+        });
+        if (!validated.ok) return jsonResponse(validated, { status: 400 });
+
+        // Omission keeps the current photo; null or an empty string removes it; a URL replaces it.
+        const photoChanged = Object.prototype.hasOwnProperty.call(changes, "photoUrl");
+        const updated: BookRow = {
+          ...ownerBook,
+          ...validated.value,
+          photoKey: photoChanged ? null : ownerBook.photoKey,
+        };
+        let result: D1Result;
+        try {
+          result = await env.DB.prepare(`
+            UPDATE books SET title = ?, author = ?, finished_on = ?,
+              photo_url = ?, photo_key = ?, memo = ?
+            WHERE id = ? AND user_id = ?
+              AND title IS ? AND author IS ? AND finished_on IS ?
+              AND photo_url IS ? AND photo_key IS ? AND memo IS ?
+          `).bind(
+            updated.title, updated.author, updated.finishedOn,
+            updated.photoUrl, updated.photoKey, updated.memo,
+            bookId, session.user.id,
+            ownerBook.title, ownerBook.author, ownerBook.finishedOn,
+            ownerBook.photoUrl, ownerBook.photoKey, ownerBook.memo,
+          ).run();
+        } catch (error) {
+          console.error("Failed to update book", error);
+          return jsonResponse({ error: "book_save_failed", message: "読書記録を保存できませんでした。" }, { status: 500 });
+        }
+        if (result.meta.changes !== 1) {
+          return jsonResponse({ error: "book_conflict", message: "記録が更新されました。読み込み直して再試行してください。" }, { status: 409 });
+        }
+        const book = toApiBook(updated);
+        if (photoChanged && ownerBook.photoKey) {
+          try {
+            await env.BOOK_PHOTOS.delete(ownerBook.photoKey);
+          } catch (error) {
+            console.error("Failed to remove previous book photo", ownerBook.photoKey, error);
+            return photoCleanupFailed(book, false);
+          }
+        }
+        return jsonResponse({ book, persistence: "d1" });
       }
 
       if (request.method === "GET") {
@@ -228,25 +433,9 @@ export default {
       }
 
       if (request.method === "POST") {
-        if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-          return jsonResponse({
-            error: "invalid_json",
-            message: "Content-Typeをapplication/jsonにして送信してください。",
-          }, { status: 415 });
-        }
-
-        let input: unknown;
-
-        try {
-          input = await request.json();
-        } catch {
-          return jsonResponse({
-            error: "invalid_json",
-            message: "正しいJSON形式で送信してください。",
-          }, { status: 400 });
-        }
-
-        const validated = validateBookInput(input);
+        const parsed = await readBookJson(request);
+        if (!parsed.ok) return parsed.response;
+        const validated = validateBookInput(parsed.input);
         if (!validated.ok) {
           return jsonResponse(validated, { status: 400 });
         }
