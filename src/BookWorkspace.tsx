@@ -1,5 +1,6 @@
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
+import { validateBookInput } from "../worker/book-input";
 
 type ApiBooksResponse = {
   books: BookRecord[];
@@ -141,6 +142,11 @@ export function BookWorkspace({ onSessionExpired }: BookWorkspaceProps) {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSubmitting) return;
+    const validated = validateBookInput(form);
+    if (!validated.ok) {
+      setApiError(validated.message);
+      return;
+    }
     if (selectedPhoto) {
       const validationError = photoFileError(selectedPhoto);
       if (validationError) {
@@ -159,7 +165,12 @@ export function BookWorkspace({ onSessionExpired }: BookWorkspaceProps) {
         await onSessionExpired();
         throw new Error("ログインの有効期限が切れました。再度ログインしてください。");
       }
-      if (!response.ok) throw new Error("読書記録を保存できませんでした。");
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null) as { message?: unknown } | null;
+        throw new Error(typeof errorBody?.message === "string"
+          ? errorBody.message
+          : "読書記録を保存できませんでした。");
+      }
       const result = (await response.json()) as ApiCreateBookResponse;
       setServerBooks((current) => [result.book, ...current]);
       setForm(initialForm);

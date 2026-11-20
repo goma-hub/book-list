@@ -1,5 +1,6 @@
 import { createAuth } from "./auth";
 import type { AuthBindings } from "./auth";
+import { validateBookInput } from "./book-input";
 
 type AppBindings = AuthBindings & { BOOK_PHOTOS: R2Bucket };
 
@@ -14,14 +15,6 @@ type ApiBook = {
 };
 
 type BookRow = ApiBook & { photoKey: string | null };
-
-type BookInput = {
-  title?: unknown;
-  author?: unknown;
-  finishedOn?: unknown;
-  photoUrl?: unknown;
-  memo?: unknown;
-};
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const PHOTO_EXTENSIONS: Record<string, string> = {
@@ -84,15 +77,6 @@ async function readPhoto(request: Request) {
     offset += chunk.byteLength;
   }
   return bytes;
-}
-
-function optionalText(value: unknown) {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 function jsonResponse(data: unknown, init: ResponseInit = {}) {
@@ -244,21 +228,32 @@ export default {
       }
 
       if (request.method === "POST") {
-        let input: BookInput;
+        if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+          return jsonResponse({
+            error: "invalid_json",
+            message: "Content-Typeをapplication/jsonにして送信してください。",
+          }, { status: 415 });
+        }
+
+        let input: unknown;
 
         try {
-          input = (await request.json()) as BookInput;
+          input = await request.json();
         } catch {
-          return jsonResponse({ error: "invalid_json" }, { status: 400 });
+          return jsonResponse({
+            error: "invalid_json",
+            message: "正しいJSON形式で送信してください。",
+          }, { status: 400 });
+        }
+
+        const validated = validateBookInput(input);
+        if (!validated.ok) {
+          return jsonResponse(validated, { status: 400 });
         }
 
         const book: ApiBook = {
           id: crypto.randomUUID(),
-          title: optionalText(input.title),
-          author: optionalText(input.author),
-          finishedOn: optionalText(input.finishedOn),
-          photoUrl: optionalText(input.photoUrl),
-          memo: optionalText(input.memo),
+          ...validated.value,
           createdAt: new Date().toISOString(),
         };
 
