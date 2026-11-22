@@ -41,10 +41,39 @@ function Fields({ form, change, mode, changeMode, setFile, fileRef, titleRef, ex
   changeMode: (mode: PhotoMode) => void; setFile: (file: File | null) => void;
   fileRef: RefObject<HTMLInputElement | null>; titleRef: RefObject<HTMLInputElement | null>; existing: string | null;
 }) {
+  const finishedOnTextRef = useRef<HTMLInputElement>(null);
+  const calendarRef = useRef<HTMLInputElement>(null);
+  const calendarValue = /^\d{4}-\d{2}-\d{2}$/.test(form.finishedOn) ? form.finishedOn : "";
+  const dateProbe = document.createElement("input");
+  dateProbe.type = "date";
+  const nativeDateSupported = dateProbe.type === "date";
+  const canShowPicker = nativeDateSupported && typeof HTMLInputElement.prototype.showPicker === "function";
+  function openCalendar() {
+    const picker = calendarRef.current;
+    if (!nativeDateSupported || !picker) { finishedOnTextRef.current?.focus(); return; }
+    try {
+      if (typeof picker.showPicker === "function") picker.showPicker();
+      else { picker.focus(); picker.click(); }
+    } catch {
+      picker.focus();
+      picker.click();
+    }
+  }
   return <div className="form-fields">
     <label className="field-row"><span>本のタイトル</span><input ref={titleRef} value={form.title} onChange={(event) => change("title", event.target.value)} placeholder="例：銀河鉄道の夜" /></label>
     <label className="field-row"><span>作者名</span><input value={form.author} onChange={(event) => change("author", event.target.value)} placeholder="例：宮沢賢治" /></label>
-    <label className="field-row"><span>読了日</span><input type="date" value={form.finishedOn} onChange={(event) => change("finishedOn", event.target.value)} /></label>
+    <div className="field-row"><span>読了日</span><div className="finished-on-field" role="group" aria-label="読了日">
+      <div className="finished-on-inputs">
+        <input ref={finishedOnTextRef} type="text" aria-label="読了日を文字で入力" value={form.finishedOn} onChange={(event) => change("finishedOn", event.target.value)} placeholder="YYYY / YYYY-MM / YYYY-MM-DD" />
+        <span className={`finished-on-picker${nativeDateSupported && !canShowPicker ? " native-picker-fallback" : ""}`}>
+          <button type="button" aria-label="カレンダーから読了日を選択" aria-hidden={nativeDateSupported && !canShowPicker ? true : undefined} tabIndex={nativeDateSupported && !canShowPicker ? -1 : undefined} onClick={openCalendar}>
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M7 3v4M17 3v4M3 10h18" /></svg>
+          </button>
+          {nativeDateSupported ? <input ref={calendarRef} type="date" aria-label={canShowPicker ? undefined : "カレンダーから読了日を選択"} aria-hidden={canShowPicker ? true : undefined} tabIndex={canShowPicker ? -1 : undefined} value={calendarValue} onChange={(event) => { if (event.target.value) change("finishedOn", event.target.value); }} /> : null}
+        </span>
+      </div>
+      <small className="field-hint">年のみ・年月のみでも登録できます。カレンダーで選ぶと年月日を入力します。</small>
+    </div></div>
     <div className="field-row photo-field"><span>本の写真</span><div className="photo-options" role="radiogroup" aria-label="本の写真">
       {([["none", "写真なし"], ["upload", "画像ファイルをアップロード"], ["url", "画像URLを入力"]] as const).map(([value, label]) =>
         <label className="radio-option" key={value}><input type="radio" name="photo-mode" checked={mode === value} onChange={() => changeMode(value)} />{label}</label>)}
@@ -146,7 +175,7 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   function modalKeys(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") { event.preventDefault(); if (modal === "edit" || modal === "create") cancel(); else if (!busy) close(); }
     if (event.key !== "Tab") return;
-    const items = Array.from(modalRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])") ?? []).filter((item) => item.getClientRects().length > 0);
+    const items = Array.from(modalRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled):not([tabindex='-1']), input:not(:disabled):not([tabindex='-1']), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])") ?? []).filter((item) => item.getClientRects().length > 0);
     if (!items.length) { event.preventDefault(); modalRef.current?.focus(); return; }
     if (!items.includes(document.activeElement as HTMLElement)) { event.preventDefault(); (event.shiftKey ? items[items.length - 1] : items[0])?.focus(); }
     else if (event.shiftKey && document.activeElement === items[0]) { event.preventDefault(); items[items.length - 1]?.focus(); }

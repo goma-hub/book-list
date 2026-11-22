@@ -219,11 +219,16 @@ export default {
         const year = Number(new Intl.DateTimeFormat("en-US", {
           year: "numeric", timeZone: "Asia/Tokyo",
         }).format(new Date()));
+        const tokyoYearStart = new Date(Date.UTC(year, 0, 1) - 9 * 60 * 60 * 1000).toISOString();
+        const tokyoNextYearStart = new Date(Date.UTC(year + 1, 0, 1) - 9 * 60 * 60 * 1000).toISOString();
         const counts = await env.DB.prepare(`
           SELECT COUNT(*) AS totalCount,
-            COUNT(CASE WHEN finished_on >= ? AND finished_on < ? THEN 1 END) AS finishedThisYear
+            COUNT(CASE WHEN
+              (finished_on >= ? AND finished_on < ?)
+              OR (NULLIF(TRIM(finished_on), '') IS NULL AND created_at >= ? AND created_at < ?)
+              THEN 1 END) AS finishedThisYear
           FROM books WHERE user_id = ?
-        `).bind(`${year}-01-01`, `${year + 1}-01-01`, session.user.id)
+        `).bind(`${year}`, `${year + 1}`, tokyoYearStart, tokyoNextYearStart, session.user.id)
           .first<{ totalCount: number; finishedThisYear: number }>();
         const latest = await env.DB.prepare(`
           SELECT ${BOOK_COLUMNS} FROM books

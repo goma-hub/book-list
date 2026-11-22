@@ -127,6 +127,7 @@ test('home returns owned counts and only the latest five records', async () => {
   const h = harness([
     ...books(7).map((book, index) => ({
       ...book,
+      createdAt: new Date(Date.UTC(year, 5, 1)).toISOString(),
       finishedOn: index < 3 ? `${year}-04-01` : index === 3 ? `${year - 1}-12-31` : null,
       ...(index === 6 ? { photoKey: 'books/book-007/cover.png' } : {}),
     })),
@@ -136,14 +137,42 @@ test('home returns owned counts and only the latest five records', async () => {
   const home = await h.request('/api/books/home');
   assert.equal(home.status, 200);
   assert.equal(home.body.totalCount, 7);
-  assert.equal(home.body.finishedThisYear, 3);
+  assert.equal(home.body.finishedThisYear, 6);
   assert.deepEqual(home.body.books.map((book) => book.id),
     ['book-007', 'book-006', 'book-005', 'book-004', 'book-003']);
   assert.equal(home.body.books[0].photoUrl, '/api/books/book-007/photo');
   assert.equal((await h.request('/api/books/home', 'GET', undefined, 'other')).body.totalCount, 1);
-  assert.ok(h.queries.some(({ sql }) => sql.includes('COUNT(CASE WHEN finished_on')));
+  assert.ok(h.queries.some(({ sql }) => sql.includes('COUNT(CASE WHEN') && sql.includes("NULLIF(TRIM(finished_on), '')")));
   assert.ok(h.queries.some(({ sql }) => sql.includes('LIMIT 5')));
   assert.equal((await h.request('/api/books/home', 'POST')).status, 405);
+});
+
+test('home uses the finished year first and falls back to Tokyo registration year only for missing dates', async () => {
+  const year = Number(new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', timeZone: 'Asia/Tokyo',
+  }).format(new Date()));
+  const start = Date.UTC(year, 0, 1) - 9 * 60 * 60 * 1000;
+  const end = Date.UTC(year + 1, 0, 1) - 9 * 60 * 60 * 1000;
+  const old = new Date(start - 1).toISOString();
+  const current = new Date(start).toISOString();
+  const h = harness([
+    fixture({ id: 'year', finishedOn: `${year}`, createdAt: old }),
+    fixture({ id: 'month', finishedOn: `${year}-01`, createdAt: old }),
+    fixture({ id: 'day', finishedOn: `${year}-12-31`, createdAt: old }),
+    fixture({ id: 'previous', finishedOn: `${year - 1}-12-31`, createdAt: current }),
+    fixture({ id: 'missing-start', finishedOn: null, createdAt: current }),
+    fixture({ id: 'missing-end', finishedOn: '', createdAt: new Date(end - 1).toISOString() }),
+    fixture({ id: 'before-start', finishedOn: null, createdAt: old }),
+    fixture({ id: 'at-end', finishedOn: null, createdAt: new Date(end).toISOString() }),
+    fixture({ id: 'next-year', finishedOn: `${year + 1}`, createdAt: current }),
+    fixture({ id: 'other-user', userId: 'other', finishedOn: `${year}`, createdAt: current }),
+  ]);
+  const home = await h.request('/api/books/home');
+  assert.equal(home.status, 200);
+  assert.equal(home.body.totalCount, 9);
+  assert.equal(home.body.finishedThisYear, 5);
+  assert.equal((await h.request('/api/books/home', 'GET', undefined, 'other')).body.finishedThisYear, 1);
+  assert.equal((await h.request('/api/books/missing-end')).body.book.finishedOn, '');
 });
 
 test('page lookup fetches only the requested twenty with stable order and owner counts', async () => {
@@ -246,6 +275,43 @@ test('editing validates merged fields and rejects malformed input', async () => 
   assert.equal((await h.request('/api/books/book-1', 'PUT', { photoUrl: 'file:///x' })).status, 400);
   assert.equal((await h.request('/api/books/book-1', 'PUT', [])).status, 400);
   assert.equal(h.rows.get('book-1').title, 'Book');
+});
+
+test('finished dates retain their entered precision through create, edit, detail and list', async () => {
+  const h = harness();
+  for (const finishedOn of ['0001', '2024-02', '2024-02-29']) {
+    const create = await h.request('/api/books', 'POST', { title: 'Dated book', finishedOn });
+    assert.equal(create.status, 201);
+    assert.equal(create.body.book.finishedOn, finishedOn);
+    const id = create.body.book.id;
+    assert.equal((await h.request(`/api/books/${id}`)).body.book.finishedOn, finishedOn);
+    assert.equal((await h.request(`/api/books/${id}`, 'PUT', { memo: 'Edited' })).body.book.finishedOn, finishedOn);
+    assert.equal((await h.request('/api/books')).body.books.find((book) => book.id === id).finishedOn, finishedOn);
+  }
+  const id = (await h.request('/api/books')).body.books[0].id;
+  const edit = await h.request(`/api/books/${id}`, 'PUT', { finishedOn: '2026-01' });
+  assert.equal(edit.status, 200);
+  assert.equal(edit.body.book.finishedOn, '2026-01');
+});
+
+test('finished dates reject invalid precision, calendar dates and leap days on create and edit', async () => {
+  const h = harness();
+  for (const finishedOn of [
+    '0000', '202', '2026-1', '2026-001', '2026-00', '2026-13',
+    '2026-02-29', '2024-02-30', '2026-04-31', '2026-01-1',
+    '2026-01-00', '2026-01-32', '2026/01', '2026-01-01T00:00:00Z',
+  ]) {
+    const create = await h.request('/api/books', 'POST', { title: 'Dated book', finishedOn });
+    const edit = await h.request('/api/books/book-1', 'PUT', { finishedOn });
+    assert.equal(create.status, 400, finishedOn);
+    assert.equal(edit.status, 400, finishedOn);
+    assert.equal(create.body.field, 'finishedOn');
+    assert.equal(edit.body.field, 'finishedOn');
+    const message = '読了日は半角数字で入力し、年月の区切りにはハイフン（-）を使ってください。実際に存在する日付を入力してください。';
+    assert.equal(create.body.message, message);
+    assert.equal(edit.body.message, message);
+  }
+  assert.equal(h.rows.get('book-1').finishedOn, null);
 });
 
 test('book JSON enforces the byte limit for POST and PUT regardless of Content-Length', async () => {

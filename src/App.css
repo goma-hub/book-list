@@ -460,6 +460,16 @@ button:disabled {
   font-size: 1rem;
 }
 .field-row > span { padding-top: 11px; }
+.finished-on-field { display: grid; gap: 6px; min-width: 0; }
+.finished-on-inputs { display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 10px; }
+.finished-on-inputs input { min-width: 0; }
+.finished-on-picker { position: relative; display: block; width: 48px; height: 46px; }
+.finished-on-picker button { display: grid; place-items: center; width: 100%; height: 100%; padding: 0; border: 1px solid #bec4bb; border-radius: 6px; background: #fff; color: #164b80; cursor: pointer; }
+.finished-on-picker button:hover { background: #eef5fb; }
+.finished-on-picker input[type="date"] { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.finished-on-picker.native-picker-fallback input[type="date"] { pointer-events: auto; cursor: pointer; }
+.finished-on-picker.native-picker-fallback input::-webkit-calendar-picker-indicator { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.finished-on-picker.native-picker-fallback:focus-within button { outline: 3px solid #86b8e8; outline-offset: 2px; }
 .photo-options { display: grid; gap: 8px; min-width: 0; }
 .radio-option { display: flex; align-items: center; gap: 10px; font-weight: 500; }
 .radio-option input { width: auto; margin: 0; accent-color: #1d5e9e; }
