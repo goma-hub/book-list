@@ -218,13 +218,24 @@ button:disabled {
 }
 
 .book-row {
+  border-bottom: 1px solid #d5d7d1;
+}
+.book-row-button {
   display: flex;
   align-items: center;
   gap: 22px;
+  width: 100%;
   min-height: 106px;
   padding: 13px 18px;
-  border-bottom: 1px solid #d5d7d1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
 }
+.book-row-button:hover { background: #f6f7f4; }
+.row-action { margin-left: auto; white-space: nowrap; color: #414641; }
+.row-action span { font-size: 1.5em; vertical-align: -0.06em; }
 
 .book-cover {
   width: 70px;
@@ -251,21 +262,16 @@ button:disabled {
 }
 
 .book-details {
+  display: grid;
   min-width: 0;
 }
-
-.book-details h3 {
+.book-details strong {
   margin: 0 0 4px;
   overflow-wrap: anywhere;
   font-size: 1.16rem;
   line-height: 1.3;
 }
-
-.book-details p {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 0;
+.book-details > span {
   color: #4f544d;
   font-size: 0.95rem;
 }
@@ -359,6 +365,82 @@ button:disabled {
   display: grid;
   gap: 16px;
 }
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(20 23 20 / 62%);
+}
+.book-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(800px, 100%);
+  max-height: 88dvh;
+  overflow: hidden;
+  border: 1px solid #2e332e;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 22px 60px rgb(0 0 0 / 25%);
+}
+.book-modal:focus { outline: none; }
+.modal-form { display: flex; flex-direction: column; min-height: 0; }
+.modal-header { flex: none; padding: 24px 32px 14px; }
+.modal-header h2 { margin: 0; font-size: clamp(1.6rem, 3vw, 2rem); }
+.modal-header p { margin: 4px 0 0; color: #4e554c; font-size: 0.91rem; }
+.modal-scroll { min-height: 0; overflow-y: auto; padding: 10px 32px 24px; }
+.modal-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  flex: none;
+  padding: 18px 32px 28px;
+  background: #fff;
+}
+.modal-actions button { min-height: 52px; font-size: 1.05rem; }
+.form-fields { display: grid; gap: 18px; }
+.field-row {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+  font-size: 1rem;
+}
+.field-row > span { padding-top: 11px; }
+.photo-options { display: grid; gap: 8px; min-width: 0; }
+.radio-option { display: flex; align-items: center; gap: 10px; font-weight: 500; }
+.radio-option input { width: auto; margin: 0; accent-color: #414641; }
+.photo-entry { margin-top: 4px; font-weight: 500; }
+.existing-photo { display: flex; align-items: center; gap: 12px; margin: 4px 0; font-size: 0.82rem; }
+.existing-photo .book-cover { width: 52px; height: 62px; }
+.detail-scroll { padding-top: 0; }
+.detail-top { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 30px; border-top: 1px solid #d3d6d1; padding-top: 20px; }
+.book-cover-large { width: 180px; height: 240px; border-radius: 6px; }
+.book-cover-large .cover-placeholder { font-size: 4rem; }
+.detail-facts { display: grid; align-content: start; }
+.detail-facts > div { display: grid; gap: 2px; padding: 4px 0 12px; border-bottom: 1px solid #d3d6d1; }
+.detail-facts span { color: #596058; font-size: 0.88rem; font-weight: 700; }
+.detail-facts strong { overflow-wrap: anywhere; font-size: clamp(1.2rem, 2.7vw, 1.7rem); line-height: 1.3; }
+.memo-detail h3 { margin: 16px 0 6px; }
+.memo-box { min-height: 96px; padding: 12px 14px; border: 1px solid #bfc4bd; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.delete-link {
+  display: block;
+  width: fit-content;
+  min-height: 0;
+  margin: 14px 0 0 auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #4b504b;
+  font-size: 0.88rem;
+  font-weight: 500;
+  text-decoration: underline;
+}
+.delete-link:hover { background: transparent; color: #8d241d; }
 
 .form-heading {
   display: flex;
@@ -522,6 +604,9 @@ textarea {
   }
 
   .book-row {
+    padding: 0;
+  }
+  .book-row-button {
     gap: 12px;
     min-height: 84px;
     padding: 10px 2px;
@@ -532,11 +617,10 @@ textarea {
     height: 64px;
   }
 
-  .book-details h3 {
+  .book-details strong {
     font-size: 1rem;
   }
-
-  .book-details p {
+  .book-details > span {
     font-size: 0.8rem;
   }
 
@@ -551,4 +635,16 @@ textarea {
   .panel {
     padding: 20px;
   }
+  .modal-backdrop { padding: 10px; }
+  .book-modal { max-height: 92dvh; }
+  .modal-header { padding: 18px 18px 10px; }
+  .modal-scroll { padding: 8px 18px 18px; }
+  .modal-actions { gap: 10px; padding: 14px 18px 18px; }
+  .modal-actions button { padding: 8px; font-size: 0.92rem; }
+  .field-row { grid-template-columns: 1fr; gap: 5px; }
+  .field-row > span { padding: 0; }
+  .detail-top { grid-template-columns: 105px minmax(0, 1fr); gap: 14px; }
+  .book-cover-large { width: 105px; height: 150px; }
+  .detail-facts strong { font-size: 1.1rem; }
+  .row-action { font-size: 0.82rem; }
 }
