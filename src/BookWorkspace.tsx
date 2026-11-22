@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { validateBookInput } from "../worker/book-input";
+import { preparePhoto } from "./photo-upload";
 import { Toast } from "./Toast";
 import type { ToastNotice } from "./Toast";
 
@@ -78,7 +79,7 @@ function Fields({ form, change, mode, changeMode, setFile, fileRef, titleRef, ex
       {([["none", "写真なし"], ["upload", "画像ファイルをアップロード"], ["url", "画像URLを入力"]] as const).map(([value, label]) =>
         <label className="radio-option" key={value}><input type="radio" name="photo-mode" checked={mode === value} onChange={() => changeMode(value)} />{label}</label>)}
       {existing ? <div className="existing-photo"><Cover url={existing} /><span>現在の写真</span></div> : null}
-      {mode === "upload" ? <label className="photo-entry"><span>画像ファイル</span><input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setFile(event.currentTarget.files?.[0] ?? null)} /><small className="field-hint">JPEG・PNG・WebP、5MB以下。保存済みの写真は再選択不要です。</small></label> : null}
+      {mode === "upload" ? <label className="photo-entry"><span>画像ファイル</span><input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setFile(event.currentTarget.files?.[0] ?? null)} /><small className="field-hint">JPEG・PNG・WebP、元画像は20MiB以下。大きい写真は自動で縮小します。保存済みの写真は再選択不要です。</small></label> : null}
       {mode === "url" ? <label className="photo-entry"><span>画像URL</span><input type="url" value={form.photoUrl} onChange={(event) => change("photoUrl", event.target.value)} placeholder="https://example.com/book.jpg" /></label> : null}
     </div></div>
     <label className="field-row"><span>メモ</span><textarea value={form.memo} onChange={(event) => change("memo", event.target.value)} placeholder="感想やあらすじのメモ" rows={4} /></label>
@@ -98,13 +99,14 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   const [form, setForm] = useState<BookForm>(emptyForm);
   const [mode, setMode] = useState<PhotoMode>("none");
   const [file, setFile] = useState<File | null>(null);
-  const [pendingPhoto, setPendingPhoto] = useState<{ id: string; file: File } | null>(null);
+  const [pendingPhoto, setPendingPhoto] = useState<{ id: string; data: Blob } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [photoConfirmation, setPhotoConfirmation] = useState<"replace" | "remove" | null>(null);
   const [notice, setNotice] = useState<ToastNotice | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const preparedPhotoCache = useRef<{ source: File; data: Blob } | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const photoConfirmRef = useRef<HTMLDivElement>(null);
@@ -163,6 +165,7 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
 
   function close() {
     detailRequest.current += 1;
+    preparedPhotoCache.current = null;
     setModal(null); setBook(null); setFormError(null); setPhotoConfirmation(null);
     requestAnimationFrame(() => returnFocus.current?.focus());
   }
@@ -203,6 +206,7 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   }
   function openCreate() {
     returnFocus.current = document.activeElement as HTMLElement;
+    preparedPhotoCache.current = null;
     setForm({ ...emptyForm }); setMode("none"); setFile(null); setFormError(null);
     originalForm.current = JSON.stringify({ form: emptyForm, mode: "none" }); setModal("create");
   }
@@ -220,11 +224,13 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   }
   function startEdit() {
     if (!book) return;
+    preparedPhotoCache.current = null;
     const nextForm = fromBook(book), nextMode = modeFromBook(book);
     setForm(nextForm); setMode(nextMode); setFile(null); setFormError(null);
     originalForm.current = JSON.stringify({ form: nextForm, mode: nextMode }); setModal("edit");
   }
   function changeMode(next: PhotoMode) {
+    preparedPhotoCache.current = null;
     setMode(next); setFile(null); setForm((current) => ({ ...current, photoUrl: "" }));
     if (fileRef.current) fileRef.current.value = "";
   }
@@ -234,11 +240,11 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
     if (response.status === 401) { await onSessionExpired(); throw new Error("ログインの有効期限が切れました。再度ログインしてください。"); }
     return { response, result };
   }
-  async function putPhoto(id: string, selected: File) {
+  async function putPhoto(id: string, selected: Blob) {
     const response = await fetch(photoPath(id), { method: "PUT", headers: { "content-type": selected.type }, body: selected });
     const result = await response.json().catch(() => ({})) as ApiResult;
     if (response.status === 401) { await onSessionExpired(); throw new Error("ログインの有効期限が切れました。再度ログインしてください。"); }
-    if (response.status === 413) throw new Error("写真は5MB以下のファイルを選んでください。");
+    if (response.status === 413) throw new Error("圧縮後の写真が5MiBを超えています。");
     if (response.status === 415) throw new Error("JPEG・PNG・WebP形式の写真を選んでください。");
     if (!response.ok && !(result.saved && result.book)) throw new Error(result.message ?? "写真を保存できませんでした。再試行してください。");
     return { url: result.photoUrl ?? `${photoPath(id)}?v=${Date.now()}`, warning: result.cleanupPending ? result.message ?? "古い写真の削除が完了していません。" : null };
@@ -246,7 +252,7 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   async function retryPhoto() {
     if (!pendingPhoto || uploading) return;
     setUploading(true);
-    try { const photo = await putPhoto(pendingPhoto.id, pendingPhoto.file); setPendingPhoto(null); setNotice({ text: photo.warning ?? "写真を保存しました。", kind: photo.warning ? "error" : "success" }); setRefresh((value) => value + 1); }
+    try { const photo = await putPhoto(pendingPhoto.id, pendingPhoto.data); setPendingPhoto(null); setNotice({ text: photo.warning ?? "写真を保存しました。", kind: photo.warning ? "error" : "success" }); setRefresh((value) => value + 1); }
     catch (error) { setNotice({ text: `記録は保存済みです。写真のみ失敗しました。${error instanceof Error ? error.message : ""}`, kind: "error" }); }
     finally { setUploading(false); }
   }
@@ -260,10 +266,6 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
     if (!validated.ok) { setFormError(validated.message); return; }
     if (mode === "url" && !validated.value.photoUrl) { setFormError("画像URLを入力してください。"); return; }
     if (mode === "upload" && !file && !(modal === "edit" && book && uploaded(book))) { setFormError("画像ファイルを選んでください。"); return; }
-    if (mode === "upload" && file) {
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) { setFormError("JPEG・PNG・WebP形式の写真を選んでください。"); return; }
-      if (!file.size || file.size > 5 * 1024 * 1024) { setFormError("写真は5MB以下のファイルを選んでください。"); return; }
-    }
     if (modal === "edit" && book?.photoUrl && !confirmedPhotoChange) {
       const change = mode === "none" ? "remove" : mode === "upload" ? file ? "replace" : null :
         form.photoUrl.trim() !== book.photoUrl.trim() ? "replace" : null;
@@ -275,13 +277,21 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
     }
     setBusy(true); setFormError(null);
     try {
+      let photoData: Blob | null = null;
+      if (mode === "upload" && file) {
+        if (preparedPhotoCache.current?.source === file) photoData = preparedPhotoCache.current.data;
+        else {
+          photoData = await preparePhoto(file);
+          preparedPhotoCache.current = { source: file, data: photoData };
+        }
+      }
       if (modal === "create") {
         const { response, result } = await json("/api/books", "POST", { ...form, photoUrl: mode === "url" ? form.photoUrl : null });
         if (!response.ok || !result.book) throw new Error(result.message ?? "読書記録を保存できませんでした。");
         close(); setPage(1); setRefresh((value) => value + 1); setPendingPhoto(null);
-        if (mode === "upload" && file) {
-          try { const photo = await putPhoto(result.book.id, file); setNotice({ text: photo.warning ?? "読書記録と写真を保存しました。", kind: photo.warning ? "error" : "success" }); setRefresh((value) => value + 1); }
-          catch (error) { setPendingPhoto({ id: result.book.id, file }); setNotice({ text: `記録は保存済みです。写真のみ失敗しました。${error instanceof Error ? error.message : ""}`, kind: "error" }); }
+        if (photoData) {
+          try { const photo = await putPhoto(result.book.id, photoData); setNotice({ text: photo.warning ?? "読書記録と写真を保存しました。", kind: photo.warning ? "error" : "success" }); setRefresh((value) => value + 1); }
+          catch (error) { setPendingPhoto({ id: result.book.id, data: photoData }); setNotice({ text: `記録は保存済みです。写真のみ失敗しました。${error instanceof Error ? error.message : ""}`, kind: "error" }); }
         } else setNotice({ text: "読書記録を保存しました。", kind: "success" });
       } else if (modal === "edit" && book) {
         const photo = mode === "none" ? { photoUrl: null } : mode === "url" ? { photoUrl: form.photoUrl } : {};
@@ -294,9 +304,9 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
           setFormError(result.message ?? "変更は保存されましたが、古い写真の削除が完了していません。");
           return;
         }
-        if (mode === "upload" && file) {
+        if (photoData) {
           try {
-            const photo = await putPhoto(book.id, file);
+            const photo = await putPhoto(book.id, photoData);
             updated = { ...updated, photoUrl: photo.url };
             if (photo.warning) {
               setBook(updated); setDetailState("ready"); setModal("detail"); setRefresh((value) => value + 1);
