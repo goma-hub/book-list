@@ -4,3 +4,33 @@ dist
 .dev.vars*
 *.local
 npm-debug.log*
+
+# Environment files (keep safe templates trackable)
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!.env.template
+!.env.*.template
+
+# Local databases and SQLite sidecar files
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# Private keys and key stores
+*.pem
+*.key
+*.p12
+*.pfx

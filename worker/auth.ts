@@ -14,5 +14,13 @@ export function createAuth(env: AuthBindings) {
     emailAndPassword: {
       enabled: true,
     },
+    rateLimit: {
+      storage: "database",
+    },
+    advanced: {
+      ipAddress: {
+        ipAddressHeaders: ["cf-connecting-ip"],
+      },
+    },
   });
 }

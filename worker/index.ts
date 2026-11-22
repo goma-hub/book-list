@@ -21,6 +21,7 @@ const BOOK_COLUMNS = `
   photo_url AS photoUrl, photo_key AS photoKey, memo, created_at AS createdAt
 `;
 const PAGE_SIZE = 20;
+const MAX_BOOK_JSON_BYTES = 64 * 1024;
 
 function positiveInteger(value: string | null): number | null {
   if (value === null || !/^[1-9]\d*$/.test(value)) return null;
@@ -111,8 +112,40 @@ async function readBookJson(request: Request): Promise<
     }, { status: 415 }) };
   }
 
+  const tooLarge = () => ({ ok: false as const, response: jsonResponse({
+    error: "book_json_too_large",
+    message: "書籍データは64 KiB以下で送信してください。",
+  }, { status: 413 }) });
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null && /^\d+$/.test(contentLength) &&
+    Number(contentLength) > MAX_BOOK_JSON_BYTES) return tooLarge();
+
   try {
-    return { ok: true, input: await request.json() };
+    const reader = request.body?.getReader();
+    if (!reader) throw new Error("Missing JSON body");
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value.byteLength > MAX_BOOK_JSON_BYTES - size) {
+          await reader.cancel().catch(() => {});
+          return tooLarge();
+        }
+        size += value.byteLength;
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { ok: true, input: JSON.parse(new TextDecoder().decode(bytes)) };
   } catch {
     return { ok: false, response: jsonResponse({
       error: "invalid_json",
@@ -137,7 +170,9 @@ function invalidOrigin(request: Request, origin: string) {
 function photoCleanupFailed(book: ApiBook | null, removed: boolean) {
   return jsonResponse({
     error: "photo_cleanup_failed",
-    message: "変更は保存されましたが、古い写真の削除が完了していません。",
+    message: removed
+      ? "読書記録は削除されましたが、写真の削除が完了していません。"
+      : "変更は保存されましたが、古い写真の削除が完了していません。",
     cleanupPending: true,
     ...(removed ? { deleted: true } : { saved: true }),
     ...(book ? { book } : {}),

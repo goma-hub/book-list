@@ -93,13 +93,14 @@ function harness(initial = fixture()) {
   };
   const env = { DB, BOOK_PHOTOS };
 
-  async function request(path, method = 'GET', body, user = 'owner') {
-    const headers = new Headers();
+  async function request(path, method = 'GET', body, user = 'owner', options = {}) {
+    const headers = new Headers(options.headers);
     if (user) headers.set('x-test-user', user);
     if (body !== undefined) headers.set('content-type', body instanceof Uint8Array ? 'image/png' : 'application/json');
     const request = new Request(`http://localhost${path}`, {
       method, headers,
-      ...(body === undefined ? {} : { body: body instanceof Uint8Array ? body : JSON.stringify(body) }),
+      ...(body === undefined ? {} : { body: body instanceof Uint8Array || options.raw ? body : JSON.stringify(body) }),
+      ...(body instanceof ReadableStream ? { duplex: 'half' } : {}),
     });
     const response = await worker.fetch(request, env);
     return {
@@ -247,6 +248,51 @@ test('editing validates merged fields and rejects malformed input', async () => 
   assert.equal(h.rows.get('book-1').title, 'Book');
 });
 
+test('book JSON enforces the byte limit for POST and PUT regardless of Content-Length', async () => {
+  const h = harness();
+  const limit = 64 * 1024;
+  const padded = (value, bytes) => {
+    const json = JSON.stringify(value);
+    assert.ok(Buffer.byteLength(json) <= bytes);
+    return json + ' '.repeat(bytes - Buffer.byteLength(json));
+  };
+
+  assert.equal((await h.request('/api/books', 'POST', padded({ title: 'Within limit' }, limit), 'owner', { raw: true })).status, 201);
+  const oversizedPost = await h.request('/api/books', 'POST', padded({ title: 'Too large' }, limit + 1), 'owner', { raw: true });
+  assert.equal(oversizedPost.status, 413);
+  assert.equal(oversizedPost.body.error, 'book_json_too_large');
+  assert.equal((await h.request('/api/books')).body.books.length, 2);
+
+  assert.equal((await h.request('/api/books/book-1', 'PUT', padded({ memo: 'Updated' }, limit), 'owner', { raw: true })).status, 200);
+  const oversizedPut = await h.request('/api/books/book-1', 'PUT', padded({ memo: 'Rejected' }, limit + 1), 'owner', {
+    raw: true, headers: { 'content-length': '10' },
+  });
+  assert.equal(oversizedPut.status, 413);
+  assert.equal(oversizedPut.body.error, 'book_json_too_large');
+  assert.equal(h.rows.get('book-1').memo, 'Updated');
+
+  const declaredOversize = await h.request('/api/books/book-1', 'PUT', { memo: 'Rejected' }, 'owner', {
+    headers: { 'content-length': String(limit + 1) },
+  });
+  assert.equal(declaredOversize.status, 413);
+  assert.equal(h.rows.get('book-1').memo, 'Updated');
+  assert.equal((await h.request('/api/books/book-1', 'PUT', '{', 'owner', { raw: true })).status, 400);
+
+  let pulls = 0;
+  let cancelled = false;
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(pulls <= 2 ? limit / 2 : 1));
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  const streamedOversize = await h.request('/api/books', 'POST', stream, 'owner', { raw: true });
+  assert.equal(streamedOversize.status, 413);
+  assert.equal(pulls, 3);
+  assert.equal(cancelled, true);
+});
+
 test('URL replacement, photo-only removal, and R2 upload keep one active photo', async () => {
   const h = harness(fixture({ photoKey: 'books/book-1/old.png' }));
   h.objects.set('books/book-1/old.png', png);
@@ -302,6 +348,7 @@ test('D1 and R2 failures avoid dangling references and report partial cleanup', 
     assert.equal(partial.status, 500);
     assert.equal(partial.body.saved, true);
     assert.equal(partial.body.cleanupPending, true);
+    assert.equal(partial.body.message, '変更は保存されましたが、古い写真の削除が完了していません。');
     assert.equal(h.rows.get('book-1').photoKey, null);
     assert.equal(h.objects.has('books/book-1/old.png'), true);
   } finally {
@@ -325,6 +372,7 @@ test('delete failure keeps the record; R2 cleanup failure reports a completed D1
     assert.equal(partial.status, 500);
     assert.equal(partial.body.deleted, true);
     assert.equal(partial.body.cleanupPending, true);
+    assert.equal(partial.body.message, '読書記録は削除されましたが、写真の削除が完了していません。');
     assert.equal(h.rows.has('book-1'), false);
     assert.equal(h.objects.has('books/book-1/old.png'), true);
   } finally {
