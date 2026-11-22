@@ -80,7 +80,7 @@ button {
   padding: 9px 18px;
   border: 1px solid transparent;
   border-radius: 9px;
-  background: #424742;
+  background: #1d5e9e;
   color: white;
   cursor: pointer;
   font: inherit;
@@ -88,13 +88,13 @@ button {
 }
 
 button:hover {
-  background: #2c302c;
+  background: #164b80;
 }
 
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid #92a79a;
+  outline: 3px solid #86b8e8;
   outline-offset: 2px;
 }
 
@@ -142,7 +142,7 @@ button:disabled {
 }
 
 .add-book-button {
-  background: #414641;
+  background: #1d5e9e;
   box-shadow: 0 8px 20px rgb(36 37 34 / 12%);
   font-size: clamp(1.35rem, 2.3vw, 2rem);
   letter-spacing: -0.03em;
@@ -310,8 +310,8 @@ button:disabled {
 }
 
 .pagination button.current {
-  border-color: #424742;
-  background: #424742;
+  border-color: #1d5e9e;
+  background: #1d5e9e;
   color: white;
 }
 
@@ -342,17 +342,43 @@ button:disabled {
   color: #704810;
 }
 
-.save-feedback {
+.toast {
+  position: fixed;
+  z-index: 1100;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 16px;
+  gap: 12px;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 12px 14px;
   border: 1px solid #b7cdbb;
   border-radius: 8px;
   background: #eff7ef;
   color: #254c2b;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+  transform: translateX(-50%);
 }
+.toast-error {
+  border-color: #e1bd80;
+  background: #fff7ea;
+  color: #704810;
+}
+.toast > span { min-width: 0; overflow-wrap: anywhere; }
+.toast-action,
+.toast-close {
+  min-height: 36px;
+  padding: 5px 9px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  white-space: nowrap;
+}
+.toast-action { text-decoration: underline; }
+.toast-close { font-size: 1.35rem; line-height: 1; }
+.toast-action:hover,
+.toast-close:hover { background: rgb(0 0 0 / 7%); }
 
 .panel {
   padding: 28px;
@@ -387,10 +413,32 @@ button:disabled {
   box-shadow: 0 22px 60px rgb(0 0 0 / 25%);
 }
 .book-modal:focus { outline: none; }
+.photo-confirm-backdrop {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(20 23 20 / 45%);
+}
+.photo-confirm {
+  width: min(500px, 100%);
+  padding: 28px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 25%);
+}
+.photo-confirm h2 { margin: 0 0 12px; font-size: 1.35rem; }
+.photo-confirm p { margin: 0 0 24px; }
+.photo-confirm-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .modal-form { display: flex; flex-direction: column; min-height: 0; }
 .modal-header { flex: none; padding: 24px 32px 14px; }
 .modal-header h2 { margin: 0; font-size: clamp(1.6rem, 3vw, 2rem); }
 .modal-header p { margin: 4px 0 0; color: #4e554c; font-size: 0.91rem; }
+.detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.detail-edit-button { flex: none; }
+.detail-edit-button span { margin-right: 4px; font-size: 1.2em; }
 .modal-scroll { min-height: 0; overflow-y: auto; padding: 10px 32px 24px; }
 .modal-actions {
   display: grid;
@@ -401,6 +449,8 @@ button:disabled {
   background: #fff;
 }
 .modal-actions button { min-height: 52px; font-size: 1.05rem; }
+.detail-actions { display: flex; justify-content: center; }
+.detail-actions button { width: min(220px, 100%); }
 .form-fields { display: grid; gap: 18px; }
 .field-row {
   display: grid;
@@ -410,9 +460,19 @@ button:disabled {
   font-size: 1rem;
 }
 .field-row > span { padding-top: 11px; }
+.finished-on-field { display: grid; gap: 6px; min-width: 0; }
+.finished-on-inputs { display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 10px; }
+.finished-on-inputs input { min-width: 0; }
+.finished-on-picker { position: relative; display: block; width: 48px; height: 46px; }
+.finished-on-picker button { display: grid; place-items: center; width: 100%; height: 100%; padding: 0; border: 1px solid #bec4bb; border-radius: 6px; background: #fff; color: #164b80; cursor: pointer; }
+.finished-on-picker button:hover { background: #eef5fb; }
+.finished-on-picker input[type="date"] { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.finished-on-picker.native-picker-fallback input[type="date"] { pointer-events: auto; cursor: pointer; }
+.finished-on-picker.native-picker-fallback input::-webkit-calendar-picker-indicator { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.finished-on-picker.native-picker-fallback:focus-within button { outline: 3px solid #86b8e8; outline-offset: 2px; }
 .photo-options { display: grid; gap: 8px; min-width: 0; }
 .radio-option { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-.radio-option input { width: auto; margin: 0; accent-color: #414641; }
+.radio-option input { width: auto; margin: 0; accent-color: #1d5e9e; }
 .photo-entry { margin-top: 4px; font-weight: 500; }
 .existing-photo { display: flex; align-items: center; gap: 12px; margin: 4px 0; font-size: 0.82rem; }
 .existing-photo .book-cover { width: 52px; height: 62px; }
@@ -636,6 +696,9 @@ textarea {
     padding: 20px;
   }
   .modal-backdrop { padding: 10px; }
+  .photo-confirm { padding: 22px 18px; }
+  .photo-confirm-actions { gap: 8px; }
+  .photo-confirm-actions button { padding: 8px; font-size: 0.9rem; }
   .book-modal { max-height: 92dvh; }
   .modal-header { padding: 18px 18px 10px; }
   .modal-scroll { padding: 8px 18px 18px; }

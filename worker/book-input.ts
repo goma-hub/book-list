@@ -23,19 +23,25 @@ const FIELD_RULES = [
 ] as const;
 
 const BOOK_FIELDS = new Set<string>(FIELD_RULES.map(({ key }) => key));
+const INVALID_FINISHED_ON_MESSAGE = "読了日は半角数字で入力し、年月の区切りにはハイフン（-）を使ってください。実際に存在する日付を入力してください。";
 
 function invalid(message: string, field?: BookField): ValidationError {
   return { ok: false, error: "invalid_book_input", message, ...(field ? { field } : {}) };
 }
 
-function isValidDate(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+function isValidFinishedOn(value: string): boolean {
+  const match = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(value);
   if (!match) return false;
 
   const year = Number(match[1]);
+  if (year < 1) return false;
+  if (match[2] === undefined) return true;
+
   const month = Number(match[2]);
+  if (month < 1 || month > 12) return false;
+  if (match[3] === undefined) return true;
+
   const day = Number(match[3]);
-  if (year < 1 || month < 1 || month > 12) return false;
 
   const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -81,13 +87,14 @@ export function validateBookInput(input: unknown):
     }
     const trimmed = fieldValue.trim();
     if ([...trimmed].length > maxLength) {
+      if (key === "finishedOn") return invalid(INVALID_FINISHED_ON_MESSAGE, key);
       return invalid(`${label}は${maxLength}文字以内で入力してください。`, key);
     }
     value[key] = trimmed || null;
   }
 
-  if (value.finishedOn && !isValidDate(value.finishedOn)) {
-    return invalid("読了日はYYYY-MM-DD形式の実在する日付を入力してください。", "finishedOn");
+  if (value.finishedOn && !isValidFinishedOn(value.finishedOn)) {
+    return invalid(INVALID_FINISHED_ON_MESSAGE, "finishedOn");
   }
   if (value.photoUrl && !isValidPhotoUrl(value.photoUrl)) {
     return invalid("写真URLはhttp://またはhttps://で始まる有効なURLを入力してください。", "photoUrl");
