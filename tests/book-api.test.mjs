@@ -35,11 +35,13 @@ function harness(initial = fixture()) {
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT, author TEXT,
     finished_on TEXT, photo_url TEXT, photo_key TEXT, memo TEXT, created_at TEXT NOT NULL
   )`);
-  sqlite.prepare(`INSERT INTO books
+  const insert = sqlite.prepare(`INSERT INTO books
     (id, user_id, title, author, finished_on, photo_url, photo_key, memo, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(initial.id, initial.userId, initial.title, initial.author, initial.finishedOn,
-      initial.photoUrl, initial.photoKey, initial.memo, initial.createdAt);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const book of Array.isArray(initial) ? initial : [initial]) {
+    insert.run(book.id, book.userId, book.title, book.author, book.finishedOn,
+      book.photoUrl, book.photoKey, book.memo, book.createdAt);
+  }
   const rows = {
     get(id) {
       return sqlite.prepare(`SELECT id, user_id AS userId, title, author,
@@ -49,6 +51,7 @@ function harness(initial = fixture()) {
     has(id) { return Boolean(this.get(id)); },
   };
   const objects = new Map();
+  const queries = [];
   const fail = { update: false, remove: false, upload: false, cleanup: false, conflict: false };
 
   const DB = {
@@ -56,6 +59,7 @@ function harness(initial = fixture()) {
       const statement = sqlite.prepare(sql);
       return {
         bind(...params) {
+          queries.push({ sql, params });
           return {
             async first() { return statement.get(...params) ?? null; },
             async all() { return { results: statement.all(...params) }; },
@@ -104,8 +108,95 @@ function harness(initial = fixture()) {
     };
   }
 
-  return { rows, objects, fail, request };
+  return { rows, objects, queries, fail, request };
 }
+
+function books(count, overrides = {}) {
+  return Array.from({ length: count }, (_, index) => fixture({
+    id: `book-${String(index + 1).padStart(3, '0')}`,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  }));
+}
+
+test('home returns owned counts and only the latest five records', async () => {
+  const year = Number(new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', timeZone: 'Asia/Tokyo',
+  }).format(new Date()));
+  const h = harness([
+    ...books(7).map((book, index) => ({
+      ...book,
+      finishedOn: index < 3 ? `${year}-04-01` : index === 3 ? `${year - 1}-12-31` : null,
+      ...(index === 6 ? { photoKey: 'books/book-007/cover.png' } : {}),
+    })),
+    fixture({ id: 'other-book', userId: 'other', finishedOn: `${year}-02-01` }),
+  ]);
+  assert.equal((await h.request('/api/books/home', 'GET', undefined, null)).status, 401);
+  const home = await h.request('/api/books/home');
+  assert.equal(home.status, 200);
+  assert.equal(home.body.totalCount, 7);
+  assert.equal(home.body.finishedThisYear, 3);
+  assert.deepEqual(home.body.books.map((book) => book.id),
+    ['book-007', 'book-006', 'book-005', 'book-004', 'book-003']);
+  assert.equal(home.body.books[0].photoUrl, '/api/books/book-007/photo');
+  assert.equal((await h.request('/api/books/home', 'GET', undefined, 'other')).body.totalCount, 1);
+  assert.ok(h.queries.some(({ sql }) => sql.includes('COUNT(CASE WHEN finished_on')));
+  assert.ok(h.queries.some(({ sql }) => sql.includes('LIMIT 5')));
+  assert.equal((await h.request('/api/books/home', 'POST')).status, 405);
+});
+
+test('page lookup fetches only the requested twenty with stable order and owner counts', async () => {
+  const h = harness([...books(80), fixture({ id: 'other-book', userId: 'other' })]);
+  assert.equal((await h.request('/api/books?page=3&limit=20', 'GET', undefined, null)).status, 401);
+  const third = await h.request('/api/books?page=3&limit=20');
+  assert.equal(third.status, 200);
+  assert.deepEqual(
+    [third.body.page, third.body.limit, third.body.totalCount, third.body.totalPages],
+    [3, 20, 80, 4],
+  );
+  assert.deepEqual(third.body.books.map((book) => book.id),
+    books(80).reverse().slice(40, 60).map((book) => book.id));
+  const listQuery = h.queries.find(({ sql }) => sql.includes('LIMIT ? OFFSET ?'));
+  assert.deepEqual(listQuery.params, ['owner', 20, 40]);
+  assert.match(listQuery.sql, /ORDER BY created_at DESC, id DESC/);
+  assert.equal((await h.request('/api/books?page=1')).body.books[0].id, 'book-080');
+  assert.equal((await h.request('/api/books?page=4')).body.books.length, 20);
+  assert.equal((await h.request('/api/books?page=1', 'GET', undefined, 'other')).body.totalCount, 1);
+});
+
+test('empty, boundary, and deleted final pages report usable page counts', async () => {
+  for (const [count, pages, lastCount] of [[0, 1, 0], [20, 1, 20], [21, 2, 1]]) {
+    const h = harness(books(count));
+    const response = await h.request(`/api/books?page=${pages}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.totalCount, count);
+    assert.equal(response.body.totalPages, pages);
+    assert.equal(response.body.books.length, lastCount);
+    assert.equal((await h.request(`/api/books?page=${pages + 1}`)).body.totalPages, pages);
+    if (count === 21) {
+      assert.equal((await h.request('/api/books/book-001', 'DELETE')).status, 200);
+      const gone = await h.request('/api/books?page=2');
+      assert.equal(gone.status, 400);
+      assert.equal(gone.body.error, 'page_out_of_range');
+      assert.equal(gone.body.totalPages, 1);
+    }
+  }
+});
+
+test('invalid pagination is rejected before a row query', async () => {
+  const h = harness(books(2));
+  for (const query of [
+    'page=0', 'page=-1', 'page=1.5', 'page=abc', 'page=1e2', 'page=',
+    'page=99999999999999999999', 'page=2', 'page=1&page=2',
+    'limit=0', 'limit=21', 'limit=abc', 'limit=1&limit=20',
+  ]) {
+    assert.equal((await h.request(`/api/books?${query}`)).status, 400, query);
+  }
+  assert.equal(h.queries.filter(({ sql }) => sql.includes('LIMIT ? OFFSET ?')).length, 0);
+  const smaller = await h.request('/api/books?limit=1');
+  assert.equal(smaller.body.totalPages, 2);
+  assert.equal(smaller.body.books.length, 1);
+});
 
 test('detail and all mutations require authentication and ownership', async () => {
   const h = harness();

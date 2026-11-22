@@ -16,6 +16,18 @@ type ApiBook = {
 
 type BookRow = ApiBook & { photoKey: string | null };
 
+const BOOK_COLUMNS = `
+  id, title, author, finished_on AS finishedOn,
+  photo_url AS photoUrl, photo_key AS photoKey, memo, created_at AS createdAt
+`;
+const PAGE_SIZE = 20;
+
+function positiveInteger(value: string | null): number | null {
+  if (value === null || !/^[1-9]\d*$/.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const PHOTO_EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -153,13 +165,44 @@ export default {
       });
     }
 
-    if (url.pathname === "/api/books" || photoMatch || bookMatch) {
+    if (url.pathname === "/api/books" || url.pathname === "/api/books/home" || photoMatch || bookMatch) {
       const session = await createAuth(env).api.getSession({
         headers: request.headers,
       });
 
       if (!session) {
         return jsonResponse({ error: "unauthorized" }, { status: 401 });
+      }
+
+      if (url.pathname === "/api/books/home") {
+        if (request.method !== "GET") {
+          return jsonResponse({ error: "method_not_allowed" }, {
+            status: 405, headers: { Allow: "GET" },
+          });
+        }
+
+        const year = Number(new Intl.DateTimeFormat("en-US", {
+          year: "numeric", timeZone: "Asia/Tokyo",
+        }).format(new Date()));
+        const counts = await env.DB.prepare(`
+          SELECT COUNT(*) AS totalCount,
+            COUNT(CASE WHEN finished_on >= ? AND finished_on < ? THEN 1 END) AS finishedThisYear
+          FROM books WHERE user_id = ?
+        `).bind(`${year}-01-01`, `${year + 1}-01-01`, session.user.id)
+          .first<{ totalCount: number; finishedThisYear: number }>();
+        const latest = await env.DB.prepare(`
+          SELECT ${BOOK_COLUMNS} FROM books
+          WHERE user_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 5
+        `).bind(session.user.id).all<BookRow>();
+
+        return jsonResponse({
+          totalCount: counts?.totalCount ?? 0,
+          finishedThisYear: counts?.finishedThisYear ?? 0,
+          books: latest.results.map(toApiBook),
+          persistence: "d1",
+        });
       }
 
       if (photoMatch) {
@@ -411,19 +454,53 @@ export default {
       }
 
       if (request.method === "GET") {
+        const params = url.searchParams;
+        if (params.has("page") || params.has("limit")) {
+          const page = positiveInteger(params.get("page") ?? "1");
+          const limit = positiveInteger(params.get("limit") ?? String(PAGE_SIZE));
+          if (params.getAll("page").length > 1 || params.getAll("limit").length > 1 ||
+            page === null || limit === null || limit > PAGE_SIZE) {
+            return jsonResponse({
+              error: "invalid_pagination",
+              message: "ページ番号は1以上の整数、取得件数は1〜20の整数で指定してください。",
+            }, { status: 400 });
+          }
+
+          const count = await env.DB.prepare(
+            "SELECT COUNT(*) AS totalCount FROM books WHERE user_id = ?",
+          ).bind(session.user.id).first<{ totalCount: number }>();
+          const totalCount = count?.totalCount ?? 0;
+          const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+          if (page > totalPages) {
+            return jsonResponse({
+              error: "page_out_of_range",
+              message: "指定されたページは存在しません。",
+              totalCount,
+              totalPages,
+            }, { status: 400 });
+          }
+
+          const result = await env.DB.prepare(`
+            SELECT ${BOOK_COLUMNS} FROM books
+            WHERE user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+          `).bind(session.user.id, limit, (page - 1) * limit).all<BookRow>();
+          return jsonResponse({
+            books: result.results.map(toApiBook),
+            page,
+            limit,
+            totalCount,
+            totalPages,
+            persistence: "d1",
+          });
+        }
+
         const result = await env.DB.prepare(`
-          SELECT
-            id,
-            title,
-            author,
-            finished_on AS finishedOn,
-            photo_url AS photoUrl,
-            photo_key AS photoKey,
-            memo,
-            created_at AS createdAt
+          SELECT ${BOOK_COLUMNS}
           FROM books
           WHERE user_id = ?
-          ORDER BY created_at DESC
+          ORDER BY created_at DESC, id DESC
         `).bind(session.user.id).all<BookRow>();
 
         return jsonResponse({

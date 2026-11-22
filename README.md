@@ -91,4 +91,12 @@ npx wrangler deploy
 - セッション確認による未ログイン時の API 拒否と、ユーザー別の読書記録管理
 - 非公開 R2 による写真の保存と、所有者を確認する画像 API
 
+### 読書記録の取得 API
+
+いずれもログインが必要で、本人の記録だけを返します。
+
+- `GET /api/books/home`：`totalCount`、日本時間の当年の読了日を持つ件数 `finishedThisYear`、登録日時順の最新5件 `books` を返します。
+- `GET /api/books?page=3&limit=20`：指定ページの `books` と、`page`、`limit`、`totalCount`、`totalPages` を返します。ページは1始まり、`limit` は1〜20（省略時20）です。0件でも1ページとし、範囲外のページには `page_out_of_range` と現在の件数・ページ数を返します。
+- パラメータなしの `GET /api/books` は既存画面向けの全件応答を維持します。
+
 メール認証、パスワード再設定は未実装です。
