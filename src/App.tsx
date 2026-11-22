@@ -2,6 +2,7 @@ import { useState } from "react";
 import { authClient } from "./auth-client";
 import { AuthForm } from "./AuthForm";
 import { BookWorkspace } from "./BookWorkspace";
+import { Toast } from "./Toast";
 import "./App.css";
 
 function App() {
@@ -26,6 +27,7 @@ function App() {
 
   return (
     <div className="app-shell">
+      <Toast notice={signOutError ? { text: signOutError, kind: "error" } : null} onClose={() => setSignOutError(null)} />
       <div className="app-frame">
         <header className="site-header">
           <h1>読書記録</h1>
@@ -40,7 +42,6 @@ function App() {
           ) : null}
         </header>
         <main className="workspace">
-          {signOutError ? <p className="notice" role="alert">{signOutError}</p> : null}
           {isPending ? (
             <p className="loading-state" role="status">ログイン状態を確認しています…</p>
           ) : sessionError ? (

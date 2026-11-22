@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { validateBookInput } from "../worker/book-input";
+import { Toast } from "./Toast";
+import type { ToastNotice } from "./Toast";
 
 type Book = { id: string; title: string | null; author: string | null; finishedOn: string | null; photoUrl: string | null; memo: string | null; createdAt: string };
 type Home = { books: Book[]; totalCount: number; finishedThisYear: number };
@@ -69,12 +71,15 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   const [file, setFile] = useState<File | null>(null);
   const [pendingPhoto, setPendingPhoto] = useState<{ id: string; file: File } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [photoConfirmation, setPhotoConfirmation] = useState<"replace" | "remove" | null>(null);
+  const [notice, setNotice] = useState<ToastNotice | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const photoConfirmRef = useRef<HTMLDivElement>(null);
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
   const modalTitleRef = useRef<HTMLHeadingElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const originalForm = useRef("");
@@ -82,6 +87,12 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   const homeTitleRef = useRef<HTMLHeadingElement>(null);
   const listTitleRef = useRef<HTMLHeadingElement>(null);
   const navigationFocus = useRef<"home" | "list" | null>(null);
+
+  useEffect(() => {
+    if (notice?.kind !== "success") return;
+    const timer = window.setTimeout(() => setNotice((current) => current === notice ? null : current), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -117,10 +128,13 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
     (modal === "detail" ? modalTitleRef : titleRef).current?.focus();
     return () => { document.body.style.overflow = overflow; };
   }, [modal]);
+  useEffect(() => {
+    if (photoConfirmation) photoConfirmRef.current?.querySelector("button")?.focus();
+  }, [photoConfirmation]);
 
   function close() {
     detailRequest.current += 1;
-    setModal(null); setBook(null); setFormError(null);
+    setModal(null); setBook(null); setFormError(null); setPhotoConfirmation(null);
     requestAnimationFrame(() => returnFocus.current?.focus());
   }
   function dirty() { return JSON.stringify({ form, mode }) !== originalForm.current || file !== null; }
@@ -137,6 +151,19 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
     if (!items.includes(document.activeElement as HTMLElement)) { event.preventDefault(); (event.shiftKey ? items[items.length - 1] : items[0])?.focus(); }
     else if (event.shiftKey && document.activeElement === items[0]) { event.preventDefault(); items[items.length - 1]?.focus(); }
     else if (!event.shiftKey && document.activeElement === items[items.length - 1]) { event.preventDefault(); items[0]?.focus(); }
+  }
+  function backToEdit() {
+    setPhotoConfirmation(null);
+    requestAnimationFrame(() => saveButtonRef.current?.focus());
+  }
+  function photoConfirmKeys(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") { event.preventDefault(); backToEdit(); return; }
+    if (event.key !== "Tab") return;
+    const buttons = Array.from(photoConfirmRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+    if (!buttons.length) return;
+    if (!buttons.includes(document.activeElement as HTMLButtonElement)) { event.preventDefault(); (event.shiftKey ? buttons[buttons.length - 1] : buttons[0])?.focus(); }
+    else if (event.shiftKey && document.activeElement === buttons[0]) { event.preventDefault(); buttons[buttons.length - 1]?.focus(); }
+    else if (!event.shiftKey && document.activeElement === buttons[buttons.length - 1]) { event.preventDefault(); buttons[0]?.focus(); }
   }
   function changeView(next: "home" | "list") {
     navigationFocus.current = next; setLoadState("loading"); if (next === "list") setPage(1); setView(next); window.scrollTo({ top: 0, behavior: "auto" });
@@ -190,12 +217,16 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
   async function retryPhoto() {
     if (!pendingPhoto || uploading) return;
     setUploading(true);
-    try { const photo = await putPhoto(pendingPhoto.id, pendingPhoto.file); setPendingPhoto(null); setMessage(photo.warning ?? "写真を保存しました。"); setRefresh((value) => value + 1); }
-    catch (error) { setMessage(`記録は保存済みです。写真のみ失敗しました。${error instanceof Error ? error.message : ""}`); }
+    try { const photo = await putPhoto(pendingPhoto.id, pendingPhoto.file); setPendingPhoto(null); setNotice({ text: photo.warning ?? "写真を保存しました。", kind: photo.warning ? "error" : "success" }); setRefresh((value) => value + 1); }
+    catch (error) { setNotice({ text: `記録は保存済みです。写真のみ失敗しました。${error instanceof Error ? error.message : ""}`, kind: "error" }); }
     finally { setUploading(false); }
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (busy) return;
+    event.preventDefault();
+    await save();
+  }
+  async function save(confirmedPhotoChange = false) {
+    if (busy) return;
     const validated = validateBookInput({ ...form, photoUrl: mode === "url" ? form.photoUrl : null });
     if (!validated.ok) { setFormError(validated.message); return; }
     if (mode === "url" && !validated.value.photoUrl) { setFormError("画像URLを入力してください。"); return; }
@@ -204,16 +235,25 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
       if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) { setFormError("JPEG・PNG・WebP形式の写真を選んでください。"); return; }
       if (!file.size || file.size > 5 * 1024 * 1024) { setFormError("写真は5MB以下のファイルを選んでください。"); return; }
     }
+    if (modal === "edit" && book?.photoUrl && !confirmedPhotoChange) {
+      const change = mode === "none" ? "remove" : mode === "upload" ? file ? "replace" : null :
+        form.photoUrl.trim() !== book.photoUrl.trim() ? "replace" : null;
+      if (change) { setFormError(null); setPhotoConfirmation(change); return; }
+    }
+    if (confirmedPhotoChange) {
+      setPhotoConfirmation(null);
+      requestAnimationFrame(() => modalRef.current?.focus());
+    }
     setBusy(true); setFormError(null);
     try {
       if (modal === "create") {
         const { response, result } = await json("/api/books", "POST", { ...form, photoUrl: mode === "url" ? form.photoUrl : null });
         if (!response.ok || !result.book) throw new Error(result.message ?? "読書記録を保存できませんでした。");
-        close(); setPage(1); setRefresh((value) => value + 1); setMessage("読書記録を保存しました。"); setPendingPhoto(null);
+        close(); setPage(1); setRefresh((value) => value + 1); setPendingPhoto(null);
         if (mode === "upload" && file) {
-          try { const photo = await putPhoto(result.book.id, file); setMessage(photo.warning ?? "読書記録と写真を保存しました。"); setRefresh((value) => value + 1); }
-          catch (error) { setPendingPhoto({ id: result.book.id, file }); setMessage(`記録は保存済みです。写真のみ失敗しました。${error instanceof Error ? error.message : ""}`); }
-        }
+          try { const photo = await putPhoto(result.book.id, file); setNotice({ text: photo.warning ?? "読書記録と写真を保存しました。", kind: photo.warning ? "error" : "success" }); setRefresh((value) => value + 1); }
+          catch (error) { setPendingPhoto({ id: result.book.id, file }); setNotice({ text: `記録は保存済みです。写真のみ失敗しました。${error instanceof Error ? error.message : ""}`, kind: "error" }); }
+        } else setNotice({ text: "読書記録を保存しました。", kind: "success" });
       } else if (modal === "edit" && book) {
         const photo = mode === "none" ? { photoUrl: null } : mode === "url" ? { photoUrl: form.photoUrl } : {};
         const { response, result } = await json(`/api/books/${encodeURIComponent(book.id)}`, "PUT", { title: form.title, author: form.author, finishedOn: form.finishedOn, memo: form.memo, ...photo });
@@ -236,7 +276,7 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
           }
           catch (error) { setBook(updated); setRefresh((value) => value + 1); setFormError(`書籍情報は保存済みです。写真のみ失敗しました。再度「保存する」で写真を再試行できます。${error instanceof Error ? error.message : ""}`); return; }
         }
-        setBook(updated); setDetailState("ready"); setModal("detail"); setMessage("読書記録を更新しました。"); setRefresh((value) => value + 1);
+        setBook(updated); setDetailState("ready"); setModal("detail"); setNotice({ text: "読書記録を更新しました。", kind: "success" }); setRefresh((value) => value + 1);
       }
     } catch (error) { setFormError(error instanceof Error ? error.message : "読書記録の保存に失敗しました。"); }
     finally { setBusy(false); }
@@ -248,13 +288,13 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
       const { response, result } = await json(`/api/books/${encodeURIComponent(book.id)}`, "DELETE");
       if (!response.ok && !result.deleted) throw new Error(result.message ?? "読書記録を削除できませんでした。");
       close(); setRefresh((value) => value + 1);
-      setMessage(result.cleanupPending ? result.message ?? "記録は削除済みですが、写真の後片付けが完了していません。" : "読書記録を削除しました。");
+      setNotice(result.cleanupPending ? { text: result.message ?? "記録は削除済みですが、写真の後片付けが完了していません。", kind: "error" } : { text: "読書記録を削除しました。", kind: "success" });
     } catch (error) { setFormError(error instanceof Error ? error.message : "読書記録を削除できませんでした。"); }
     finally { setBusy(false); }
   }
 
   return <div className="book-workspace">
-    {message ? <div className="save-feedback" role="status"><span>{message}</span>{pendingPhoto ? <button type="button" className="text-button" disabled={uploading} onClick={() => void retryPhoto()}>{uploading ? "写真を保存中…" : "写真を再試行"}</button> : null}</div> : null}
+    <Toast notice={notice} onClose={() => setNotice(null)} action={notice?.kind === "error" && pendingPhoto ? { label: uploading ? "写真を保存中…" : "写真を再試行", disabled: uploading, onClick: () => void retryPhoto() } : undefined} />
     {view === "home" ? <>
       <section className="summary-row" aria-label="読書状況">
         <button className="add-book-button" type="button" onClick={openCreate}>＋ 記録を追加</button>
@@ -271,25 +311,30 @@ export function BookWorkspace({ onSessionExpired }: { onSessionExpired: () => Pr
       {loadState === "loading" ? <p className="loading-state" role="status">読書記録を読み込んでいます…</p> : loadState === "error" ? <div className="failure-state" role="alert"><p>読書記録を読み込めませんでした。</p><button type="button" onClick={() => setRefresh((value) => value + 1)}>再読み込み</button></div> : listing && listing.totalCount === 0 ? <div className="empty-state"><h3>まだ読書記録がありません</h3><p>ホームから最初の1冊を登録できます。</p></div> : <Rows books={listing?.books ?? []} select={(item) => void openDetail(item)} />}
       {loadState === "ready" && listing ? <nav className="pagination" aria-label="ページ番号">{Array.from({ length: listing.totalPages }, (_, index) => index + 1).map((number) => <button type="button" key={number} aria-label={`${number}ページ目`} aria-current={number === listing.page ? "page" : undefined} className={number === listing.page ? "current" : ""} onClick={() => changePage(number)}>{number}</button>)}</nav> : null}
     </section>}
-    {modal ? createPortal(<div className="modal-backdrop"><div className="book-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef} tabIndex={-1} onKeyDown={modalKeys}>
+    {modal ? createPortal(<div className="modal-backdrop"><div className="book-modal" role="dialog" aria-modal="true" aria-hidden={photoConfirmation ? true : undefined} aria-labelledby="modal-title" ref={modalRef} tabIndex={-1} onKeyDown={modalKeys}>
       {modal === "detail" ? <>
-        <div className="modal-header"><h2 id="modal-title" ref={modalTitleRef} tabIndex={-1}>本の詳細</h2></div>
+        <div className="modal-header detail-header"><h2 id="modal-title" ref={modalTitleRef} tabIndex={-1}>本の詳細</h2><button className="detail-edit-button" type="button" disabled={busy || detailState !== "ready"} onClick={startEdit}><span aria-hidden="true">✎</span> 編集</button></div>
         <div className="modal-scroll detail-scroll">{detailState === "loading" ? <p role="status">本の詳細を読み込んでいます…</p> : detailState === "error" ? <p className="notice" role="alert">{formError}</p> : book ? <>
           <div className="detail-top"><Cover key={book.photoUrl} url={book.photoUrl} large /><div className="detail-facts">
-            <div><span>本のタイトル</span><strong>{book.title ?? "未登録"}</strong></div>
-            <div><span>作者名</span><strong>{book.author ?? "未登録"}</strong></div>
-            <div><span>読了日</span><strong>{book.finishedOn ?? "未登録"}</strong></div>
+            <div><span>本のタイトル</span><strong>{book.title ?? ""}</strong></div>
+            <div><span>作者名</span><strong>{book.author ?? ""}</strong></div>
+            <div><span>読了日</span><strong>{book.finishedOn ?? ""}</strong></div>
           </div></div>
-          <div className="memo-detail"><h3>メモ</h3><div className="memo-box">{book.memo ?? "未登録"}</div></div>
+          <div className="memo-detail"><h3>メモ</h3><div className="memo-box">{book.memo ?? ""}</div></div>
           <button className="delete-link" type="button" disabled={busy} onClick={() => void remove()}><span aria-hidden="true">🗑</span> この記録を削除</button>
           {formError ? <p className="notice" role="alert">{formError}</p> : null}
         </> : null}</div>
-        <div className="modal-actions"><button className="outline-button" type="button" disabled={busy} onClick={close}>閉じる</button><button type="button" disabled={busy || detailState !== "ready"} onClick={startEdit}>編集する</button></div>
+        <div className="modal-actions detail-actions"><button className="outline-button" type="button" disabled={busy} onClick={close}>閉じる</button></div>
       </> : <form className="modal-form" onSubmit={(event) => void submit(event)}>
         <div className="modal-header"><h2 id="modal-title">{modal === "create" ? "新しい読書記録" : "読書記録を編集"}</h2><p>※タイトル・作者名・読了日・メモのうち、1項目以上入力してください。写真だけでは登録できません。</p></div>
         <div className="modal-scroll"><Fields form={form} change={(field, value) => setForm((current) => ({ ...current, [field]: value }))} mode={mode} changeMode={changeMode} setFile={setFile} fileRef={fileRef} titleRef={titleRef} existing={modal === "edit" ? book?.photoUrl ?? null : null} />{formError ? <p className="notice" role="alert">{formError}</p> : null}</div>
-        <div className="modal-actions"><button className="outline-button" type="button" disabled={busy} onClick={cancel}>キャンセル</button><button type="submit" disabled={busy}>{busy ? "保存中…" : modal === "create" ? "登録する" : "保存する"}</button></div>
+        <div className="modal-actions"><button className="outline-button" type="button" disabled={busy} onClick={cancel}>キャンセル</button><button ref={saveButtonRef} type="submit" disabled={busy}>{busy ? "保存中…" : modal === "create" ? "登録する" : "保存する"}</button></div>
       </form>}
+    </div></div>, document.body) : null}
+    {photoConfirmation ? createPortal(<div className="photo-confirm-backdrop"><div className="photo-confirm" role="alertdialog" aria-modal="true" aria-labelledby="photo-confirm-title" aria-describedby="photo-confirm-message" ref={photoConfirmRef} onKeyDown={photoConfirmKeys}>
+      <h2 id="photo-confirm-title">写真の変更を確認</h2>
+      <p id="photo-confirm-message">{photoConfirmation === "remove" ? "現在の写真をこの記録から削除します。よろしいですか？" : "現在の写真を新しい写真に変更します。よろしいですか？"}</p>
+      <div className="photo-confirm-actions"><button className="outline-button" type="button" onClick={backToEdit}>編集に戻る</button><button type="button" onClick={() => void save(true)}>変更して保存</button></div>
     </div></div>, document.body) : null}
   </div>;
 }
