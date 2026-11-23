@@ -13,6 +13,7 @@ export function createAuth(env: AuthBindings) {
     baseURL: env.BETTER_AUTH_URL,
     emailAndPassword: {
       enabled: true,
+      disableSignUp: true,
     },
     rateLimit: {
       storage: "database",

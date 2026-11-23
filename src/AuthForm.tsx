@@ -2,6 +2,8 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import { authClient } from "./auth-client";
 
+const SIGN_UP_DISABLED = true;
+
 type AuthFormProps = {
   onAuthenticated: () => Promise<void>;
 };
@@ -42,7 +44,7 @@ export function AuthForm({ onAuthenticated }: AuthFormProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isSubmitting) return;
+    if (isSubmitting || (isSignUp && SIGN_UP_DISABLED)) return;
     setError(null);
 
     if (isSignUp && !name.trim()) {
@@ -90,6 +92,8 @@ export function AuthForm({ onAuthenticated }: AuthFormProps) {
         </button>
       </div>
 
+      {isSignUp && SIGN_UP_DISABLED ? <p className="notice" role="status">現在、新規登録の受付を停止しています。</p> : null}
+
       <form className="entry-form" onSubmit={handleSubmit}>
         {isSignUp ? (
           <label>
@@ -107,7 +111,7 @@ export function AuthForm({ onAuthenticated }: AuthFormProps) {
           {isSignUp ? <span className="field-hint">8〜128文字で入力してください。</span> : null}
         </label>
         {error ? <p className="notice" role="alert">{error}</p> : null}
-        <button type="submit" disabled={isSubmitting}>
+        <button type="submit" disabled={isSubmitting || (isSignUp && SIGN_UP_DISABLED)}>
           {isSubmitting ? "処理中…" : isSignUp ? "登録する" : "ログインする"}
         </button>
       </form>
