@@ -1,102 +1,65 @@
-# book-list
+# 読書記録アプリ（book-list）
 
-読書記録アプリの Cloudflare Workers + React + Vite 構成です。
+読んだ本の情報や感想を記録し、あとから振り返るためのWebアプリです。タイトル・作者名・読了日・メモ・写真を必要な項目だけ登録でき、ログインしたユーザーごとに記録を管理します。
 
-## 起動方法
+**公開アプリ：** https://book-list.goma-lab.workers.dev
+
+## 主な機能
+
+- 読書記録の登録・一覧表示・詳細表示・編集・削除
+- 登録冊数、今年の読了数、最近登録した5冊をホーム画面に表示
+- 全件一覧を20冊ずつ表示し、ページ番号から移動
+- 読了日は「年」「年月」「年月日」で入力可能。カレンダー選択にも対応
+- 写真のアップロード・URL指定・削除。アップロード画像は必要に応じて自動縮小・圧縮
+- メールアドレスとパスワードによるユーザー認証
+
+「今年の読了数」は読了日の年を優先し、読了日が未入力の場合は登録日の日本時間で判定します。
+
+## 使用技術
+
+| 分野 | 技術 |
+| --- | --- |
+| フロントエンド | React、TypeScript、Vite |
+| API・ホスティング | Cloudflare Workers、Cloudflare Vite Plugin |
+| データベース | Cloudflare D1 |
+| 画像保存 | Cloudflare R2 |
+| 認証 | Better Auth |
+
+## 工夫した点
+
+- 読了日が曖昧な本も記録できるよう、日付の入力精度を選べる形式にしました。
+- 写真変更・削除時の確認や、画面の配置が動かないトースト通知で誤操作を減らしています。
+- 画像をブラウザ側で縮小・圧縮し、アップロードの手間と保存容量を抑えています。
+- 認証・所有者確認、ログイン試行回数の制限、リクエスト容量の制限を設けています。
+
+## ローカルでの起動
+
+Node.js と npm を使用します。
 
 ```powershell
 npm install
-npm run dev -- --host localhost --port 5173 --strictPort
 ```
 
-ローカル開発サーバーは Vite と Cloudflare Vite Plugin で起動します。
-
-## ローカルの認証設定
-
-プロジェクト直下の `.dev.vars` に以下を設定します。このファイルは Git の追跡対象から除外しています。
+プロジェクト直下に、Git管理対象外の `.dev.vars` を作成します。
 
 ```dotenv
 BETTER_AUTH_SECRET="32文字以上のランダムな値"
 BETTER_AUTH_URL="http://localhost:5173"
 ```
 
-`BETTER_AUTH_SECRET` の例はプレースホルダーです。実際にはランダム生成した値を使用してください。`BETTER_AUTH_URL` は開発サーバーの URL と一致させます。
-
-ローカル DB のマイグレーションは以下で適用します。
+`BETTER_AUTH_SECRET` には実際に生成したランダムな値を設定してください。上記は設定例であり、実際の秘密情報ではありません。
 
 ```powershell
+npx wrangler d1 migrations list book-list-db --local
 npx wrangler d1 migrations apply book-list-db --local
-```
-
-`0003_books_auth_user.sql` は既存の練習用読書記録と旧 `users` テーブルを削除し、`books` を Better Auth の `user` テーブルに紐づく構造へ変更します。
-
-`0004_books_photo_key.sql` は既存の読書記録を残したまま、R2 写真の保存先を記録する `photo_key` 列を追加します。写真 API を使用する環境では、このマイグレーションを適用してから新しいコードを起動してください。本番 D1 の未適用マイグレーションは、適用前に必ず確認してください。
-
-## 写真の保存
-
-`wrangler.jsonc` の `BOOK_PHOTOS` は、非公開の R2 バケット `book-list-photos` に接続します。ローカル開発では R2 のローカル保存領域を使用します。R2 の公開 URL や API トークンは必要ありません。
-
-ログインユーザーは、新しい読書記録を作る際や既存の記録から、JPEG・PNG・WebP 形式の写真をアップロードできます。上限は 1 枚 5 MB です。画像本体は R2、保存キーは D1 の `books.photo_key` に保存します。写真の取得・変更時は Worker がセッションと読書記録の所有者を確認します。従来の写真 URL 入力も利用でき、R2 写真がある場合はそちらを優先表示します。
-
-## 開発ルール
-
-- 依頼された範囲だけを確認・修正する
-- 問題解決に不要な調査や大規模な変更は行わない
-- まず原因を特定し、必要最小限の修正を行う
-- 修正後の確認も、原則として変更した範囲に関係するチェックだけ実行する
-- 全体チェックは、明示的に依頼された場合のみ実行する
-- npm install は必要性を確認してから行う
-- node_modules やキャッシュ等の削除は、明示的に依頼された場合のみ行う
-- GitHub への commit / push は、明示的に依頼された場合のみ行う
-- コマンドが長時間進まない場合は、無理に待たず停止して状況を報告する
-- 調査を大きく広げる必要がある場合は、勝手に進めず先に報告する
-
-## 主なコマンド
-
-```powershell
 npm run dev
-npm run build
-npm run preview
-npm run deploy
 ```
 
-## デプロイ方法
+ローカル環境ではD1・R2のローカル保存領域を使用します。マイグレーションには既存テーブルを変更・削除するものが含まれるため、既存データがある環境ではSQLの内容を確認してから適用してください。
 
-本番で認証を使うには、本番用の `BETTER_AUTH_SECRET` と公開 URL の `BETTER_AUTH_URL` を設定し、本番 D1 にマイグレーションを適用する必要があります。ローカルの `.dev.vars` とローカル DB の内容は、本番には反映されません。`0003_books_auth_user.sql` は本番への適用時にも既存の練習データを削除します。
+## 設計資料
 
-Cloudflare へのデプロイは、次のコマンドで実行します。
+- [システム要件書](docs/system-requirements.md)
+- [画面設計書](docs/screen-design.md)
 
-```powershell
-npm run deploy
-```
-
-このコマンドは Vite のビルド後に Wrangler でデプロイします。Cloudflare Vite Plugin がビルド時に `assets.directory` を含むデプロイ用設定と `.wrangler/deploy/config.json` を生成し、Wrangler はその設定を使用します。
-
-ビルド前に `npx wrangler deploy` だけを実行すると、`assets` の `directory` がないというエラーになります。手動で実行する場合は、先にビルドしてください。
-
-```powershell
-npm run build
-npx wrangler deploy
-```
-
-## 現在の実装範囲
-
-- React + Vite のフロントエンド
-- Cloudflare Workers の API エントリ
-- Cloudflare Vite Plugin による同一プロジェクト構成
-- `/api/health` による Worker API 疎通確認
-- D1 を使用する読書記録の登録・一覧 API（`/api/books`）
-- Better Auth 1.7.7 によるメールアドレス・パスワード認証（`/api/auth/*`）
-- 新規登録・ログイン・ログアウト画面
-- セッション確認による未ログイン時の API 拒否と、ユーザー別の読書記録管理
-- 非公開 R2 による写真の保存と、所有者を確認する画像 API
-
-### 読書記録の取得 API
-
-いずれもログインが必要で、本人の記録だけを返します。
-
-- `GET /api/books/home`：`totalCount`、日本時間の当年の読了日を持つ件数 `finishedThisYear`、登録日時順の最新5件 `books` を返します。
-- `GET /api/books?page=3&limit=20`：指定ページの `books` と、`page`、`limit`、`totalCount`、`totalPages` を返します。ページは1始まり、`limit` は1〜20（省略時20）です。0件でも1ページとし、範囲外のページには `page_out_of_range` と現在の件数・ページ数を返します。
-- パラメータなしの `GET /api/books` は既存画面向けの全件応答を維持します。
-
-メール認証、パスワード再設定は未実装です。
+詳細な画面仕様や機能要件は、上記の設計書に記載しています。
